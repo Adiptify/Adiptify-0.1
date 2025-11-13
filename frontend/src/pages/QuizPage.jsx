@@ -9,6 +9,8 @@ export default function QuizPage() {
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [retryCount, setRetryCount] = useState(0)
 
   async function loadCurrent(sessionId) {
     if (!sessionId) {
@@ -26,19 +28,32 @@ export default function QuizPage() {
     try {
       setLoading(true)
       setError('')
-      const cur = await apiFetch(`/api/quiz/current?sessionId=${encodeURIComponent(sessionId)}`)
+      const cur = await apiFetch(`/api/quiz/current?sessionId=${encodeURIComponent(sessionId)}`, { timeout: 15000 })
       if (!cur.item || !cur.item.question) {
-        setError('No question found. Please try starting a new quiz.')
-        setLoading(false)
-        return
+        // Soft-retry a few times in case generation just finished
+        if (retryCount < 8) {
+          setRetryCount(retryCount + 1)
+          setTimeout(() => loadCurrent(sessionId), 2000)
+          return
+        } else {
+          setError('No question found. The quiz may still be generating. Please try again in a moment or start a new quiz.')
+          setLoading(false)
+          return
+        }
       }
       setSession({ sessionId: cur.sessionId || sessionId, currentIndex: cur.currentIndex, total: cur.total })
       setItem(cur.item)
       setLoading(false)
+      setRetryCount(0) // Reset retry count on success
     } catch (e) {
       console.error('Failed to load quiz:', e)
-      setError('Failed to load quiz: ' + (e.message || 'Unknown error'))
-      setLoading(false)
+      if (retryCount < 8) {
+        setRetryCount(retryCount + 1)
+        setTimeout(() => loadCurrent(sessionId), 2000)
+      } else {
+        setError('Failed to load quiz: ' + (e.message || 'Unknown error') + '. Please try starting a new quiz.')
+        setLoading(false)
+      }
     }
   }
 
@@ -65,7 +80,8 @@ export default function QuizPage() {
       return
     }
     try {
-      const r = await apiFetch('/api/quiz/answer', { method: 'POST', body })
+      setSubmitting(true)
+      const r = await apiFetch('/api/quiz/answer', { method: 'POST', body, timeout: 12000 })
       if (r.hasMore) {
         setAnswerIndex(null); setAnswerText('')
         setSession({ ...session, currentIndex: r.currentIndex })
@@ -73,12 +89,15 @@ export default function QuizPage() {
         setMessage(r.isCorrect ? 'Correct! ✓' : 'Incorrect ✗')
       } else {
         setMessage(`Finished! Score: ${r.score || 0}%`)
-        await apiFetch('/api/quiz/finish', { method: 'POST', body: { sessionId: session.sessionId } })
+        await apiFetch('/api/quiz/finish', { method: 'POST', body: { sessionId: session.sessionId }, timeout: 10000 })
         sessionStorage.removeItem('session')
         setTimeout(() => window.location.href = '/student', 2000)
       }
     } catch (e) {
-      setMessage('Error: ' + (e.message||''))
+      if (e.name === 'AbortError') setMessage('Request timed out. Please try again.')
+      else setMessage('Error: ' + (e.message||''))
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -164,9 +183,10 @@ export default function QuizPage() {
         <button
           onClick={submit}
           disabled={item.choices?.length ? answerIndex === null : !answerText.trim()}
-          className="rounded-lg bg-gradient-to-r from-indigo-600 to-emerald-500 px-6 py-3 font-semibold text-white shadow hover:brightness-105 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          className="rounded-lg bg-gradient-to-r from-indigo-600 to-emerald-500 px-6 py-3 font-semibold text-white shadow hover:brightness-105 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
-          Submit Answer
+          {submitting && <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />}
+          {submitting ? 'Submitting…' : 'Submit Answer'}
         </button>
         {message && (
           <span className={`text-sm font-medium ${message.includes('Correct') ? 'text-green-600 dark:text-green-400' : message.includes('Incorrect') ? 'text-red-600 dark:text-red-400' : 'text-slate-600 dark:text-slate-400'}`}>

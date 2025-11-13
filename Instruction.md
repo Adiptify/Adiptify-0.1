@@ -1,9 +1,7 @@
 # Cursor Instructions — Adiptify (Ollama + MERN + AI)
 
-**Purpose:** This document contains **detailed, Cursor-ready instruction blocks** to implement an AI-enhanced adaptive learning platform (Nimbus) that uses **Ollama** as the LLM backend. Follow the instructions in sequence. Each block is a self-contained Cursor prompt designed to generate working code, configuration, or documentation. The instructions strictly follow the original problem statement: adaptive rules engine, mastery tracking, dynamic quizzes, remediation, assessment modes, instructor console, analytics, JWT roles, performance & scale, testing, Docker Compose, and seed data.
-
+**Purpose:** This document contains information to implement an AI-enhanced adaptive learning platform (Nimbus) that uses **Ollama** as the LLM backend. Follow the instructions in sequence. Each block is a self-contained Cursor prompt designed to generate working code, configuration, or documentation. The instructions strictly follow the original problem statement: adaptive rules engine, mastery tracking, dynamic quizzes, remediation, assessment modes, instructor console, analytics, JWT roles, performance & scale, testing, Docker Compose, and seed data.
 ---
-
 ## Quick summary: what we will build
 
 * **Backend:** Node.js + Express + MongoDB (Mongoose) + Ollama API adapter. Stateless REST APIs. JWT auth.
@@ -12,9 +10,7 @@
 * **Rules Engine:** JSON-driven evaluation for next-question selection, prerequisites, remediation triggers, spaced repetition.
 * **Storage:** Single primary MongoDB for users, items, attempts, mastery; plus a dedicated `generated_quizzes` collection for AI-generated quizzes (persisted for future reuse and auditing).
 * **Ops:** Docker Compose to run API, MongoDB, and optionally Ollama; deployment instructions for Render/Vercel/Atlas.
-
 ---
-
 ## How Ollama fits in
 
 * **Role:** Ollama is the LLM provider. It will be used for:

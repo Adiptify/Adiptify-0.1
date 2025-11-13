@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import PageContainer from '../../components/PageContainer.jsx'
 import Sidebar from '../../components/Sidebar.jsx'
 import ChatWidget from '../../components/ChatWidget.jsx'
+import ChatPanel from '../../components/ChatPanel.jsx'
 import { apiFetch } from '../../api/client.js'
 
 export default function StudentDashboard() {
@@ -12,6 +13,7 @@ export default function StudentDashboard() {
   const [error, setError] = useState('')
   const [showQuizModal, setShowQuizModal] = useState(false)
   const [quizConfig, setQuizConfig] = useState({ topic: '', questionCount: 5, difficulty: 'medium', mode: 'formative' })
+  const [isStarting, setIsStarting] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -57,20 +59,9 @@ export default function StudentDashboard() {
     }
     try {
       setError('')
-      // First, ensure items exist for this topic - generate if needed
       const difficultyMap = { easy: [1,2], medium: [2,3], hard: [4,5] }
-      const levels = { easy: 0, medium: 0, hard: 0 }
-      if (quizConfig.difficulty === 'easy') levels.easy = quizConfig.questionCount
-      else if (quizConfig.difficulty === 'hard') levels.hard = quizConfig.questionCount
-      else levels.medium = quizConfig.questionCount
-      
-      // Generate quiz items if needed
-      await apiFetch('/api/ai/generate', {
-        method: 'POST',
-        body: { topic: quizConfig.topic, levels, saveToBank: true }
-      })
-      
-      // Now start the quiz with the specified config
+      // Start quiz quickly; backend will queue generation if needed
+      setIsStarting(true)
       const session = await apiFetch('/api/quiz/start', {
         method: 'POST',
         body: {
@@ -80,10 +71,39 @@ export default function StudentDashboard() {
           difficulty: difficultyMap[quizConfig.difficulty]
         },
       })
+      // If background generation queued, poll a few times
+      if (session?.queued) {
+        for (let i = 0; i < 5; i++) {
+          await new Promise(r => setTimeout(r, 2500))
+          try {
+            const retried = await apiFetch('/api/quiz/start', {
+              method: 'POST',
+              body: {
+                mode: quizConfig.mode,
+                requestedTopics: [quizConfig.topic],
+                limit: quizConfig.questionCount,
+                difficulty: difficultyMap[quizConfig.difficulty]
+              },
+            })
+            if (!retried?.queued) {
+              sessionStorage.setItem('session', JSON.stringify(retried))
+              setShowQuizModal(false)
+              setIsStarting(false)
+              window.location.href = '/quiz'
+              return
+            }
+          } catch {}
+        }
+        setIsStarting(false)
+        setError('Still preparing questions… please try again in a moment.')
+        return
+      }
       sessionStorage.setItem('session', JSON.stringify(session))
       setShowQuizModal(false)
+      setIsStarting(false)
       window.location.href = '/quiz'
     } catch (e) {
+      setIsStarting(false)
       setError('Failed to start quiz: ' + (e.message||''))
     }
   }
@@ -154,10 +174,38 @@ export default function StudentDashboard() {
         </PageContainer>
         <ChatWidget />
       </main>
+      {isStarting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="rounded-2xl bg-white px-8 py-6 text-center shadow-2xl dark:bg-slate-900">
+            <div className="mx-auto mb-3 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
+            <div className="text-sm text-slate-600 dark:text-slate-300">Preparing your quiz…</div>
+          </div>
+        </div>
+      )}
       {showQuizModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="rounded-2xl bg-white p-8 shadow-2xl dark:bg-slate-900 w-full max-w-md">
-            <h3 className="mb-4 text-xl font-semibold">Configure Quiz</h3>
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isStarting) {
+              setShowQuizModal(false)
+              setError('')
+            }
+          }}
+        >
+          <div 
+            className="rounded-2xl bg-white p-8 shadow-2xl dark:bg-slate-900 w-full max-w-md mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-semibold">Configure Quiz</h3>
+              <button
+                onClick={() => { setShowQuizModal(false); setError('') }}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-2xl leading-none"
+                disabled={isStarting}
+              >
+                ×
+              </button>
+            </div>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-1">Topic *</label>
@@ -166,6 +214,7 @@ export default function StudentDashboard() {
                   placeholder="e.g., Machine Learning, Algebra, Geometry"
                   value={quizConfig.topic}
                   onChange={e => setQuizConfig({...quizConfig, topic: e.target.value})}
+                  disabled={isStarting}
                 />
               </div>
               <div>
@@ -177,6 +226,7 @@ export default function StudentDashboard() {
                   className="w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 bg-transparent"
                   value={quizConfig.questionCount}
                   onChange={e => setQuizConfig({...quizConfig, questionCount: parseInt(e.target.value) || 5})}
+                  disabled={isStarting}
                 />
               </div>
               <div>
@@ -185,6 +235,7 @@ export default function StudentDashboard() {
                   className="w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 bg-transparent"
                   value={quizConfig.difficulty}
                   onChange={e => setQuizConfig({...quizConfig, difficulty: e.target.value})}
+                  disabled={isStarting}
                 >
                   <option value="easy">Easy</option>
                   <option value="medium">Medium</option>
@@ -197,16 +248,34 @@ export default function StudentDashboard() {
                   className="w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 bg-transparent"
                   value={quizConfig.mode}
                   onChange={e => setQuizConfig({...quizConfig, mode: e.target.value})}
+                  disabled={isStarting}
                 >
                   <option value="formative">Formative</option>
                   <option value="diagnostic">Diagnostic</option>
                   <option value="summative">Summative</option>
                 </select>
               </div>
-              {error && <div className="text-sm text-red-600">{error}</div>}
-              <div className="flex gap-3">
-                <button onClick={handleStartQuiz} className="flex-1 rounded bg-indigo-600 px-4 py-2 font-medium text-white">Start Quiz</button>
-                <button onClick={() => { setShowQuizModal(false); setError('') }} className="rounded border px-4 py-2">Cancel</button>
+              {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-900/20 p-2 rounded">{error}</div>}
+              <div className="flex gap-3 pt-2">
+                <button 
+                  onClick={handleStartQuiz} 
+                  disabled={isStarting || !quizConfig.topic.trim()}
+                  className="flex-1 rounded bg-indigo-600 px-4 py-2 font-medium text-white disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-105 transition flex items-center justify-center gap-2"
+                >
+                  {isStarting ? (
+                    <>
+                      <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+                      Starting...
+                    </>
+                  ) : 'Start Quiz'}
+                </button>
+                <button 
+                  onClick={() => { setShowQuizModal(false); setError('') }} 
+                  disabled={isStarting}
+                  className="rounded border px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                >
+                  Cancel
+                </button>
               </div>
             </div>
           </div>

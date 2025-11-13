@@ -48,9 +48,15 @@ function Layout({ children }) {
           <div className="flex items-center gap-3">
             <nav className="hidden gap-4 sm:flex text-sm">
               <NavLink to="/" end className={({isActive})=>isActive?"underline":undefined}>Home</NavLink>
-              <NavLink to="/student" className={({isActive})=>isActive?"underline":undefined}>Student</NavLink>
-              <NavLink to="/instructor" className={({isActive})=>isActive?"underline":undefined}>Instructor</NavLink>
-              <NavLink to="/admin" className={({isActive})=>isActive?"underline":undefined}>Admin</NavLink>
+              {user?.role === 'student' && (
+                <NavLink to="/student" className={({isActive})=>isActive?"underline":undefined}>Student</NavLink>
+              )}
+              {user?.role === 'instructor' && (
+                <NavLink to="/instructor" className={({isActive})=>isActive?"underline":undefined}>Instructor</NavLink>
+              )}
+              {user?.role === 'admin' && (
+                <NavLink to="/admin" className={({isActive})=>isActive?"underline":undefined}>Admin</NavLink>
+              )}
             </nav>
             <button
               className="rounded-md border border-slate-300 px-3 py-1 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
@@ -103,6 +109,10 @@ export default function App() {
             <Route element={<ProtectedRoute roles={["admin"]} />}> 
               <Route path="/admin" element={<AdminDashboard />} />
             </Route>
+            {/** Role-branded login shortcuts */}
+            <Route path="/student-login" element={<Navigate to="/login?redirect=/student" replace />} />
+            <Route path="/instructor-login" element={<Navigate to="/login?redirect=/instructor" replace />} />
+            <Route path="/admin-login" element={<Navigate to="/login?redirect=/admin" replace />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
           </Route>

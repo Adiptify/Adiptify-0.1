@@ -11,10 +11,25 @@ const router = express.Router();
 // POST /api/quiz/start -> creates QuizSession after calling rules engine
 router.post("/start", auth, async (req, res) => {
   const { mode = "formative", requestedTopics = [], limit = 6, difficulty } = req.body || {};
-  const selection = await selectItems({ userId: req.user._id, sessionContext: { mode, requestedTopics, difficulty }, limit });
+  
+  // Try to get items, with retry logic for generated quizzes
+  let selection = await selectItems({ userId: req.user._id, sessionContext: { mode, requestedTopics, difficulty }, limit });
+  
+  // If no items found, wait a bit and try once more (for recently generated quizzes)
+  if (!selection.itemIds || selection.itemIds.length === 0) {
+    // Wait 2 seconds for background generation
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    selection = await selectItems({ userId: req.user._id, sessionContext: { mode, requestedTopics, difficulty }, limit });
+  }
   
   if (!selection.itemIds || selection.itemIds.length === 0) {
-    return res.status(400).json({ error: "No questions found for the specified topic and difficulty. Please try generating questions first." });
+    // Still no items - return queued status
+    return res.status(202).json({ queued: true, message: "Preparing questions for this topic. Please wait a few seconds and retry." });
+  }
+  
+  // Ensure we have at least some items
+  if (selection.itemIds.length < 1) {
+    return res.status(400).json({ error: "Could not find or generate questions for this topic. Please try a different topic." });
   }
   
   const session = await QuizSession.create({
@@ -25,7 +40,7 @@ router.post("/start", auth, async (req, res) => {
     metadata: { rulesUsed: selection.metadata, requestedTopics, difficulty },
     status: "active",
   });
-  return res.json({ sessionId: session._id, _id: session._id, itemIds: session.itemIds, currentIndex: session.currentIndex });
+  return res.json({ sessionId: session._id, _id: session._id, itemIds: session.itemIds, currentIndex: session.currentIndex, total: session.itemIds.length });
 });
 
 // GET /api/quiz/active -> fetch latest active session for user
@@ -180,17 +195,31 @@ router.post("/finish", auth, async (req, res) => {
   const session = await QuizSession.findById(sessionId);
   if (!session || String(session.user) !== String(req.user._id)) return res.status(404).json({ error: "Session not found" });
 
-  // Compute simple score: proportion of correct attempts in this session
+  // Compute quiz-based score: proportion of correct attempts out of total questions in quiz
   const attempts = await Attempt.find({ session: session._id }).lean();
+  const totalQuestions = session.itemIds?.length || 0;
   const correct = attempts.filter((a) => a.isCorrect).length;
-  const score = attempts.length ? Math.round((correct / attempts.length) * 100) : 0;
+  
+  // Score is based on quiz completion, not just attempts
+  // If user didn't answer all questions, count unanswered as incorrect
+  const answeredCount = attempts.length;
+  const unansweredCount = Math.max(0, totalQuestions - answeredCount);
+  const score = totalQuestions > 0 ? Math.round((correct / totalQuestions) * 100) : 0;
 
   session.score = score;
   session.status = "completed";
   session.completedAt = new Date();
   await session.save();
 
-  return res.json({ sessionId: session._id, score, attempts: attempts.length });
+  return res.json({ 
+    sessionId: session._id, 
+    score, 
+    correct,
+    total: totalQuestions,
+    answered: answeredCount,
+    unanswered: unansweredCount,
+    attempts: attempts.length 
+  });
 });
 
 export default router;

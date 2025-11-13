@@ -1,6 +1,7 @@
 import ollama from 'ollama';
 import GeneratedQuiz from "../models/GeneratedQuiz.js";
 import { config } from "../config/index.js";
+import { QUESTION_GENERATOR, EXPLANATION_GENERATOR, TOPIC_SUMMARY_NOTES, CHATBOT_TEMPLATE } from "../prompts/ollamaPrompts.js";
 
 function normalizeDifficulty(d) {
   if (typeof d === "number") return Math.min(5, Math.max(1, d));
@@ -63,19 +64,26 @@ export function parseItems(resp) {
 
 export async function generateQuestionsFromTopic(topic, options = {}, userId = null) {
   const { levels = { easy: 2, medium: 2, hard: 2 } } = options;
+  const total = (levels.easy || 0) + (levels.medium || 0) + (levels.hard || 0) || 6;
   const timestamp = Date.now();
-  // Build the prompt according to provided template (import if needed)
-  const reqPrompt = `You are an expert content generator. Given a topic: "${topic}", generate **N** questions grouped by difficulty levels: EASY, MEDIUM, HARD. For each question produce JSON with fields: id (unique seed id), type (mcq/short/code), question, choices (empty array for non-MCQ), answer (canonical), explanation (concise), difficulty (1..5), bloom (one of: remember, understand, apply, analyze, evaluate, create), topics (array), skills (array), hints (array up to 2). Output a JSON array only. Ensure no markdown or extra text. Validate that difficulty maps: EASY -> 1-2, MEDIUM -> 2-3, HARD -> 4-5. Ensure deterministic seed generation by adding 'seed_${topic.replace(/\s+/g,'_')}_${timestamp}' to each id.`;
+  // Build the prompt from template
+  const promptTemplate = QUESTION_GENERATOR
+    .replaceAll('{{topic}}', topic)
+    .replaceAll('{{timestamp}}', String(timestamp));
+  const reqPrompt = `${promptTemplate}\nN=${total}`;
   let rawResponse = null;
   let aiOutput = [];
   try {
-    // Use ollama.generate, cloud model
-    const response = await ollama.generate({
+    // Use ollama.generate with an 8s timeout to prevent long waits
+    const generatePromise = ollama.generate({
       model: config.ollamaModel,
       prompt: reqPrompt,
       format: 'json',
       stream: false,
+      keep_alive: '2m',
     });
+    const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error('AI timeout')), 8000));
+    const response = await Promise.race([generatePromise, timeoutPromise]);
     rawResponse = response.response || response;
     try {
       aiOutput = typeof rawResponse === 'string' ? JSON.parse(rawResponse) : rawResponse;

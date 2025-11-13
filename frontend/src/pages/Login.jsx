@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { apiFetch } from '../api/client.js'
 import { useAuth } from '../context/AuthContext.jsx'
 import { decodeJwt } from '../utils/jwt.js'
@@ -9,6 +9,7 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const navigate = useNavigate()
+  const location = useLocation()
   const { setToken, setUser } = useAuth()
 
   async function onSubmit(e) {
@@ -18,8 +19,17 @@ export default function Login() {
       const { token } = await apiFetch('/api/auth/login', { method: 'POST', body: { email, password } })
       setToken(token)
       const payload = decodeJwt(token)
-      setUser({ email: payload?.email || email, role: payload?.role || 'student', name: payload?.name || '' })
-      navigate('/')
+      const role = payload?.role || 'student'
+      setUser({ email: payload?.email || email, role, name: payload?.name || '' })
+      const params = new URLSearchParams(location.search)
+      const redirect = params.get('redirect')
+      if (redirect) {
+        navigate(redirect, { replace: true })
+        return
+      }
+      if (role === 'admin') navigate('/admin', { replace: true })
+      else if (role === 'instructor') navigate('/instructor', { replace: true })
+      else navigate('/student', { replace: true })
     } catch (e) {
       setError(e.message)
     }

@@ -9,12 +9,21 @@ export async function apiFetch(path, options = {}) {
   if (!headers['Content-Type'] && options.body && typeof options.body === 'object') {
     headers['Content-Type'] = 'application/json';
   }
+  const controller = new AbortController();
+  const timeoutMs = typeof options.timeout === 'number' ? options.timeout : 0;
+  let timeoutId;
+  if (timeoutMs > 0) {
+    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  }
   const res = await fetch(path, {
     ...options,
     headers,
+    signal: controller.signal,
     body: headers['Content-Type'] === 'application/json' && options.body && typeof options.body === 'object'
       ? JSON.stringify(options.body)
       : options.body,
+  }).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
   });
   if (!res.ok) {
     let details = {};

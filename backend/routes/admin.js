@@ -76,4 +76,55 @@ router.post('/reports/:id/respond', async (req, res) => {
   await report.save();
   res.json({ ok: true });
 });
+
+// Subject management (admin/instructor only)
+router.post('/students/:id/subjects', auth, async (req, res) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'instructor') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const { subject } = req.body;
+  if (!subject || typeof subject !== 'string') return res.status(400).json({ error: 'Invalid subject' });
+  const student = await User.findById(req.params.id);
+  if (!student || student.role !== 'student') return res.status(404).json({ error: 'Not found' });
+  if (!student.learnerProfile) student.learnerProfile = {};
+  if (!student.learnerProfile.topics) student.learnerProfile.topics = new Map();
+  const isMap = student.learnerProfile.topics instanceof Map;
+  if ((isMap && student.learnerProfile.topics.has(subject)) || (!isMap && Object.hasOwn(student.learnerProfile.topics, subject))) {
+    return res.status(200).json({ message: 'Subject already exists.' });
+  }
+  const defaultObj = { mastery: 0, attempts: 0, streak: 0, timeOnTask: 0 };
+  if (isMap) student.learnerProfile.topics.set(subject, defaultObj);
+  else student.learnerProfile.topics[subject] = defaultObj;
+  await student.save();
+  res.json({ ok: true });
+});
+
+router.delete('/students/:id/subjects/:subject', auth, async (req, res) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'instructor') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const { id, subject } = req.params;
+  const student = await User.findById(id);
+  if (!student || student.role !== 'student') return res.status(404).json({ error: 'Not found' });
+  if (!student.learnerProfile?.topics) return res.status(404).json({ error: 'Subject list empty.' });
+  const isMap = student.learnerProfile.topics instanceof Map;
+  if (isMap) student.learnerProfile.topics.delete(subject);
+  else delete student.learnerProfile.topics[subject];
+  await student.save();
+  res.json({ ok: true });
+});
+
+router.get('/students/:id/subjects', auth, async (req, res) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'instructor') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const student = await User.findById(req.params.id);
+  if (!student || student.role !== 'student') return res.status(404).json({ error: 'Not found' });
+  let topics = student.learnerProfile?.topics;
+  if (!topics) return res.json([]);
+  if (topics instanceof Map) topics = Array.from(topics.keys());
+  else topics = Object.keys(topics);
+  res.json(topics);
+});
+
 export default router;

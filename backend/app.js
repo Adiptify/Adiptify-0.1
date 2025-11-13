@@ -11,6 +11,7 @@ import chatRoutes from "./routes/chat.js";
 import quizzesRoutes from "./routes/quizzes.js";
 import adminRoutes from './routes/admin.js';
 import issueRoutes from './routes/issues.js';
+import learningRoutes from './routes/learning.js';
 
 dotenv.config();
 
@@ -33,6 +34,7 @@ app.use("/api/chat", chatRoutes);
 app.use("/api/quizzes", quizzesRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/', issueRoutes); // routes/issues.js exports router with POST /api/report-issue
+app.use('/api/learning', learningRoutes);
 
 // Mongo connection (lazy connect if URI present)
 const MONGO_URI = process.env.MONGO_URI;

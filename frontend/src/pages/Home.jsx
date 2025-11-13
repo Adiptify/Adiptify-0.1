@@ -17,20 +17,20 @@ export default function Home() {
           title="Student Portal"
           desc="Register with your Student ID/Roll No. or login to access quizzes, mastery, and AI support."
           registerLink="/register"
-          loginLink="/login"
+          loginLink="/login?redirect=/student"
           cta="Go to Student"
           showRegister
         />
         <PortalCard
           title="Instructor Portal"
           desc="Login to manage and assign quizzes to your students. No public registration."
-          loginLink="/instructor-login"
+          loginLink="/login?redirect=/instructor"
           cta="Go to Instructor"
         />
         <PortalCard
           title="Admin Portal"
           desc="Login for admin controls, publishing, and moderation. No public registration."
-          loginLink="/admin-login"
+          loginLink="/login?redirect=/admin"
           cta="Go to Admin"
         />
       </section>

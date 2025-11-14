@@ -34,12 +34,21 @@ export default function Learning() {
       const me = await apiFetch('/api/auth/me')
       const topicMap = me.learnerProfile?.topics || {}
       const masteryObj = topicMap instanceof Map ? Object.fromEntries(topicMap) : (typeof topicMap === 'object' ? topicMap : {})
-      setTopics(Object.keys(masteryObj).map(topic => ({
-        name: topic,
-        mastery: Math.round((masteryObj[topic]?.mastery || 0)),
-        attempts: masteryObj[topic]?.attempts || 0,
-        streak: masteryObj[topic]?.streak || 0
-      })))
+          setTopics(Object.keys(masteryObj).map(topic => {
+            // Handle both old (0-1) and new (0-100) formats
+            let masteryPercent = masteryObj[topic]?.mastery || 0;
+            if (masteryPercent < 1 && masteryPercent > 0) {
+              masteryPercent = Math.round(masteryPercent * 100); // Old format: convert to percentage
+            } else {
+              masteryPercent = Math.round(masteryPercent); // New format: already percentage
+            }
+            return {
+              name: topic,
+              mastery: masteryPercent,
+              attempts: masteryObj[topic]?.attempts || 0,
+              streak: masteryObj[topic]?.streak || 0
+            }
+          }))
     } catch (e) {
       setAddError('Failed to load subjects')
     } finally {
@@ -62,18 +71,26 @@ export default function Learning() {
   async function handleAddSubject(e) {
     if (e && e.preventDefault) e.preventDefault()
     const subject = newSubject.trim()
-    setAddError(''); if (!subject) return setAddError('Type a subject to add!')
+    setAddError(''); 
+    if (!subject) {
+      setAddError('Type a subject to add!')
+      return
+    }
     if (topics.some(t => t.name.toLowerCase() === subject.toLowerCase())) {
       setAddError('Subject already exists!')
       return
     }
     setAdding(true)
+    setAddError('')
     try {
       await apiFetch('/api/learning/subject', { method: 'POST', body: { subject } })
       setNewSubject('')
-      await reloadTopics(); await reloadAllSubjects();
+      await reloadTopics()
+      await reloadAllSubjects()
+      setAddError('') // Clear any previous errors
     } catch (e) {
-      setAddError('Failed to add subject: ' + (e.message || ''))
+      console.error('Error adding subject:', e)
+      setAddError('Failed to add subject: ' + (e.message || 'Unknown error. Please try again.'))
     } finally {
       setAdding(false)
     }
@@ -139,19 +156,39 @@ export default function Learning() {
           {/* BROWSE SUBJECTS SECTION */}
           {!selectedTopic && allSubjects.length > 0 && (
             <section className="mb-6">
-              <h3 className="font-semibold mb-2">Browse Subjects</h3>
+              <h3 className="font-semibold mb-2">
+                Browse Subjects ({allSubjects.length} available)
+                {topics.length > 0 && (
+                  <span className="text-sm font-normal text-slate-500 dark:text-slate-400 ml-2">
+                    ({topics.length} already added)
+                  </span>
+                )}
+              </h3>
               <div className="flex flex-wrap gap-2">
-                {allSubjects.sort().map(sub => (
-                  <button
-                    key={sub}
-                    onClick={() => handleAddFromBrowse(sub)}
-                    className={`px-3 py-1 rounded-xl border text-sm ${topics.some(t => t.name.toLowerCase() === sub.toLowerCase()) ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed' : 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-800'}`}
-                    disabled={topics.some(t => t.name.toLowerCase() === sub.toLowerCase()) || adding}
-                  >
-                    {sub}
-                  </button>
-                ))}
+                {allSubjects.sort().map(sub => {
+                  const isAlreadyAdded = topics.some(t => t.name.toLowerCase() === sub.toLowerCase())
+                  return (
+                    <button
+                      key={sub}
+                      onClick={() => !isAlreadyAdded && !adding && handleAddFromBrowse(sub)}
+                      className={`px-3 py-1 rounded-xl border text-sm transition-all ${
+                        isAlreadyAdded 
+                          ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed' 
+                          : 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-800 cursor-pointer'
+                      } ${adding ? 'opacity-50 cursor-wait' : ''}`}
+                      disabled={isAlreadyAdded || adding}
+                      title={isAlreadyAdded ? 'Already added' : 'Click to add'}
+                    >
+                      {sub} {isAlreadyAdded && '✓'}
+                    </button>
+                  )
+                })}
               </div>
+              {allSubjects.filter(sub => !topics.some(t => t.name.toLowerCase() === sub.toLowerCase())).length === 0 && (
+                <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
+                  All available subjects have been added. You can add new subjects using the input field above.
+                </p>
+              )}
             </section>
           )}
 

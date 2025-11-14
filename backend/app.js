@@ -5,13 +5,14 @@ import dotenv from "dotenv";
 import mongoose from "mongoose";
 import authRoutes from "./routes/auth.js";
 import aiRoutes from "./routes/ai.js";
-import quizRoutes from "./routes/quiz.js";
 import notesRoutes from "./routes/notes.js";
 import chatRoutes from "./routes/chat.js";
-import quizzesRoutes from "./routes/quizzes.js";
 import adminRoutes from './routes/admin.js';
 import issueRoutes from './routes/issues.js';
 import learningRoutes from './routes/learning.js';
+import proctorRoutes from './routes/proctor.js';
+import assessmentRoutes from './routes/assessment.js';
+import questionBankRoutes from './routes/questionBank.js';
 
 dotenv.config();
 
@@ -28,13 +29,14 @@ app.get("/api/ping", (req, res) => {
 
 app.use("/api/auth", authRoutes);
 app.use("/api/ai", aiRoutes);
-app.use("/api/quiz", quizRoutes);
 app.use("/api/notes", notesRoutes);
 app.use("/api/chat", chatRoutes);
-app.use("/api/quizzes", quizzesRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/', issueRoutes); // routes/issues.js exports router with POST /api/report-issue
 app.use('/api/learning', learningRoutes);
+app.use('/api/proctor', proctorRoutes);
+app.use('/api/assessment', assessmentRoutes);
+app.use('/api/question-bank', questionBankRoutes);
 
 // Mongo connection (lazy connect if URI present)
 const MONGO_URI = process.env.MONGO_URI;

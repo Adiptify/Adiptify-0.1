@@ -1,6 +1,6 @@
 import express from "express";
 import { auth } from "../middleware/auth.js";
-import GeneratedQuiz from "../models/GeneratedQuiz.js";
+import GeneratedAssessment from "../models/GeneratedAssessment.js";
 import { marked } from "marked";
 import path from "path";
 import fs from "fs";
@@ -9,7 +9,7 @@ const router = express.Router();
 
 // GET /api/notes/:id/download -> returns a simple HTML file from markdown
 router.get("/:id/download", auth, async (req, res) => {
-  const doc = await GeneratedQuiz.findById(req.params.id).lean();
+  const doc = await GeneratedAssessment.findById(req.params.id).lean();
   if (!doc || !doc.notes) return res.status(404).json({ error: "Notes not found" });
   const html = `<!DOCTYPE html><html><head><meta charset='utf-8'><title>${doc.topic} Notes</title></head><body>${marked.parse(doc.notes)}</body></html>`;
 

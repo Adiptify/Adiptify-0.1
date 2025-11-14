@@ -1,16 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { apiFetch } from '../api/client.js'
+import { useChatHistory } from '../hooks/useChatHistory.js'
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
 
-function MessageContent({ content }) {
-  let html = content
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/`(.+?)`/g, '<code class="bg-slate-200 dark:bg-slate-700 px-1 rounded">$1</code>')
-    .replace(/\n/g, '<br />')
+const MessageContent = React.memo(function MessageContent({ content }) {
+  const html = useMemo(() => {
+    return content
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/`(.+?)`/g, '<code class="bg-slate-200 dark:bg-slate-700 px-1 rounded">$1</code>')
+      .replace(/\n/g, '<br />')
+  }, [content])
+  
   return <div dangerouslySetInnerHTML={{ __html: html }} />
-}
+})
 
 function downloadChatMarkdown(messages) {
   let md = '# Chat Transcript\n\n'
@@ -29,39 +33,72 @@ function downloadChatMarkdown(messages) {
 }
 
 export default function ChatPanel({ initialSystemContext = '', initialUserPrompt = '' }) {
-  const [messages, setMessages] = useState([
-    { role: 'assistant', content: '👋 I am your AI Tutor! I know about your quiz performance and mastery. Ask me anything about your learning!' }
-  ])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [streaming, setStreaming] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const scrollerRef = useRef(null)
   const messagesEndRef = useRef(null)
   const chatRef = useRef(null)
+  const updateThrottleRef = useRef(null)
+  const lastUpdateTimeRef = useRef(0)
+  const {
+    chatHistory,
+    currentMessages,
+    setCurrentMessages,
+    startNewChat,
+    loadChat,
+    deleteChat,
+    addMessage,
+    updateLastMessage,
+    setStreaming: setStreamingFlag
+  } = useChatHistory()
 
   useEffect(() => {
     if (scrollerRef.current) {
-      scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight
+      requestAnimationFrame(() => {
+        scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight
+      })
     }
-  }, [messages])
+  }, [currentMessages.length]) // Only depend on length
 
   useEffect(() => {
     if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
+      requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+      })
     }
-  }, [messages])
+  }, [currentMessages.length]) // Only depend on length
 
-  async function send(text) {
+  // Throttled update function
+  const throttledUpdate = useCallback((text) => {
+    const now = Date.now()
+    if (now - lastUpdateTimeRef.current >= 100) {
+      updateLastMessage(text)
+      lastUpdateTimeRef.current = now
+    } else {
+      if (updateThrottleRef.current) {
+        clearTimeout(updateThrottleRef.current)
+      }
+      updateThrottleRef.current = setTimeout(() => {
+        updateLastMessage(text)
+        lastUpdateTimeRef.current = Date.now()
+      }, 100 - (now - lastUpdateTimeRef.current))
+    }
+  }, [updateLastMessage])
+
+  const send = useCallback(async (text) => {
     const content = (text ?? input).trim()
     if (!content || sending) return
     const userMsg = { role: 'user', content }
-    setMessages(msgs => [...msgs, userMsg])
+    addMessage(userMsg)
     setInput('')
     setSending(true)
     setStreaming(true)
+    setStreamingFlag(true)
 
-    let assistantMsg = { role: 'assistant', content: '' }
-    setMessages(msgs => [...msgs, assistantMsg])
+    addMessage({ role: 'assistant', content: '' })
+    lastUpdateTimeRef.current = Date.now()
 
     try {
       const token = localStorage.getItem('token')
@@ -83,47 +120,60 @@ export default function ChatPanel({ initialSystemContext = '', initialUserPrompt
         const { done, value } = await reader.read()
         if (done) break
         text += decoder.decode(value, { stream: true })
-        assistantMsg.content = text
-        setMessages(msgs => {
-          const arr = [...msgs]
-          arr[arr.length - 1] = { ...assistantMsg }
-          return arr
-        })
+        throttledUpdate(text)
       }
+      // Final update
+      updateLastMessage(text)
     } catch (e) {
-      assistantMsg.content = 'Sorry, something went wrong: ' + (e.message || 'Unknown error')
-      setMessages(msgs => {
-        const arr = [...msgs]
-        arr[arr.length - 1] = { ...assistantMsg }
-        return arr
-      })
+      updateLastMessage('Sorry, something went wrong: ' + (e.message || 'Unknown error'))
     } finally {
       setSending(false)
       setStreaming(false)
+      setStreamingFlag(false)
     }
-  }
+  }, [input, sending, addMessage, updateLastMessage, throttledUpdate, setStreamingFlag])
 
   async function handleDownloadPdf() {
     if (!chatRef.current) return
-    const canvas = await html2canvas(chatRef.current, { backgroundColor: '#fff', useCORS: true })
-    const pdf = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' })
-    const pageWidth = pdf.internal.pageSize.getWidth()
-    const imgWidth = pageWidth - 60
-    const imgHeight = canvas.height * imgWidth / canvas.width
-    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 30, 40, imgWidth, imgHeight)
-    pdf.save('chat_transcript.pdf')
+    try {
+      const canvas = await html2canvas(chatRef.current, { backgroundColor: '#fff', useCORS: true })
+      const pdf = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' })
+      const pageWidth = pdf.internal.pageSize.getWidth()
+      const imgWidth = pageWidth - 60
+      const imgHeight = canvas.height * imgWidth / canvas.width
+      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 30, 40, imgWidth, imgHeight)
+      pdf.save('chat_transcript.pdf')
+    } catch (e) {
+      console.error('Failed to generate PDF:', e)
+    }
   }
 
   return (
-    <div className="flex h-[600px] flex-col rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-900">
+    <div className="relative flex h-[600px] flex-col rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-900">
       <div className="border-b border-slate-200 p-4 dark:border-slate-800 flex items-center justify-between">
-        <div>
-          <h3 className="font-semibold text-lg">AI Tutor Chat</h3>
-          <p className="text-xs text-slate-500">Context-aware assistance based on your learning progress</p>
+        <div className="flex items-center gap-2">
+          <div>
+            <h3 className="font-semibold text-lg">AI Tutor Chat</h3>
+            <p className="text-xs text-slate-500">Context-aware assistance based on your learning progress</p>
+          </div>
+          <button
+            onClick={startNewChat}
+            className="text-xs bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 px-2 py-1 rounded hover:bg-indigo-200 dark:hover:bg-indigo-900/50 ml-2"
+            title="Start New Chat"
+          >
+            + New
+          </button>
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className="text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700"
+            title="Chat History"
+          >
+            📚
+          </button>
         </div>
         <div className="flex gap-3">
           <button
-            onClick={() => downloadChatMarkdown(messages)}
+            onClick={() => downloadChatMarkdown(currentMessages)}
             className="rounded bg-emerald-500 px-3 py-1 text-xs text-white font-semibold hover:brightness-105"
           >
             Download Chat
@@ -134,8 +184,51 @@ export default function ChatPanel({ initialSystemContext = '', initialUserPrompt
           >Download PDF</button>
         </div>
       </div>
-      <div ref={chatRef} className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.map((m, i) => (
+      
+      {/* Chat History Sidebar */}
+      {showHistory && (
+        <div className="absolute left-0 top-20 bottom-20 w-64 bg-slate-50 dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 overflow-y-auto z-10">
+          <div className="p-3">
+            <h4 className="font-semibold text-sm mb-2">Chat History</h4>
+            <div className="space-y-1">
+              {chatHistory.length === 0 ? (
+                <p className="text-xs text-slate-500 dark:text-slate-400 p-2">No past chats</p>
+              ) : (
+                chatHistory.map(chat => (
+                  <div
+                    key={chat.id}
+                    className="p-2 rounded hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer group flex items-center justify-between"
+                    onClick={() => {
+                      loadChat(chat.id)
+                      setShowHistory(false)
+                    }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-slate-700 dark:text-slate-300 truncate">
+                        {chat.title}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        {new Date(chat.updatedAt).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        deleteChat(chat.id)
+                      }}
+                      className="opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-700 text-xs"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      <div ref={chatRef} className={`flex-1 overflow-y-auto p-4 space-y-3 ${showHistory ? 'ml-64' : ''}`}>
+        {currentMessages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm shadow ${
               m.role === 'user'
@@ -143,7 +236,7 @@ export default function ChatPanel({ initialSystemContext = '', initialUserPrompt
                 : 'bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200'
             }`}>
               <MessageContent content={m.content} />
-              {streaming && i === messages.length - 1 && (
+              {streaming && i === currentMessages.length - 1 && (
                 <span className="inline-block w-2 h-4 bg-indigo-400 animate-pulse ml-1">|</span>
               )}
             </div>

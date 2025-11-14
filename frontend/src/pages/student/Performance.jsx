@@ -14,13 +14,18 @@ export default function Performance() {
         const me = await apiFetch('/api/auth/me')
         const topicMap = me.learnerProfile?.topics || {}
         const masteryObj = topicMap instanceof Map ? Object.fromEntries(topicMap) : (typeof topicMap === 'object' ? topicMap : {})
-        const allMasteries = Object.values(masteryObj).map(m => m.mastery || 0)
-        const avgMastery = allMasteries.length ? Math.round((allMasteries.reduce((a,b)=>a+b,0)/allMasteries.length)*100) : 0
+        // Handle both old (0-1) and new (0-100) formats
+        const allMasteries = Object.values(masteryObj).map(m => {
+          let mastery = m.mastery || 0
+          if (mastery < 1 && mastery > 0) mastery = mastery * 100 // Convert old format
+          return mastery
+        })
+        const avgMastery = allMasteries.length ? Math.round((allMasteries.reduce((a,b)=>a+b,0)/allMasteries.length)) : 0
         const totalAttempts = Object.values(masteryObj).reduce((a, m) => a + (m.attempts || 0), 0)
         const totalTime = Object.values(masteryObj).reduce((a, m) => a + (m.timeOnTask || 0), 0)
         setStats({ avgMastery, totalAttempts, totalTime: Math.round(totalTime/60000) })
         
-        const sess = await apiFetch('/api/quiz/sessions?limit=10')
+        const sess = await apiFetch('/api/assessment/sessions?limit=10')
         setSessions(sess)
       } catch (e) {
         console.error(e)

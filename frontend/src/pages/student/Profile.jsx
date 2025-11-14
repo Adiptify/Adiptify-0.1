@@ -59,12 +59,21 @@ export default function Profile() {
               <h3 className="mb-4 text-lg font-semibold">Learning Stats</h3>
               <div className="space-y-3">
                 {profile?.learnerProfile?.topics && Object.keys(profile.learnerProfile.topics).length > 0 ? (
-                  Object.entries(profile.learnerProfile.topics).map(([topic, data]) => (
-                    <div key={topic}>
-                      <div className="text-sm font-medium">{topic}</div>
-                      <div className="text-xs text-slate-500">Mastery: {Math.round((data.mastery || 0) * 100)}% | Attempts: {data.attempts || 0}</div>
-                    </div>
-                  ))
+                  Object.entries(profile.learnerProfile.topics).map(([topic, data]) => {
+                    // Handle both old (0-1) and new (0-100) formats
+                    let masteryPercent = data.mastery || 0;
+                    if (masteryPercent < 1 && masteryPercent > 0) {
+                      masteryPercent = Math.round(masteryPercent * 100); // Old format: convert to percentage
+                    } else {
+                      masteryPercent = Math.round(masteryPercent); // New format: already percentage
+                    }
+                    return (
+                      <div key={topic}>
+                        <div className="text-sm font-medium">{topic}</div>
+                        <div className="text-xs text-slate-500">Mastery: {masteryPercent}% | Attempts: {data.attempts || 0}</div>
+                      </div>
+                    )
+                  })
                 ) : (
                   <div className="text-sm text-slate-400">No learning data yet. Start a quiz to begin!</div>
                 )}

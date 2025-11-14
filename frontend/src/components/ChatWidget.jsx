@@ -1,64 +1,93 @@
-import { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { apiFetch } from '../api/client.js'
+import { useChatHistory } from '../hooks/useChatHistory.js'
 
 export default function ChatWidget() {
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
-  const [messages, setMessages] = useState([
-    { role: 'assistant', content: '👋 I am your AI Tutor! Ask me about quizzes, results, or anything learning-related.' },
-  ])
   const [streaming, setStreaming] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef()
+  const updateThrottleRef = useRef(null)
+  const lastUpdateTimeRef = useRef(0)
+  const {
+    chatHistory,
+    currentMessages,
+    setCurrentMessages,
+    startNewChat,
+    loadChat,
+    deleteChat,
+    addMessage,
+    updateLastMessage,
+    setStreaming: setStreamingFlag
+  } = useChatHistory()
 
   useEffect(() => {
     if (open && messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' })
+      // Use requestAnimationFrame for smoother scrolling
+      requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+      })
     }
-  }, [messages, open])
+  }, [currentMessages.length, open]) // Only depend on length, not full array
 
-  async function sendMessage(e) {
+  // Throttled update function - only updates every 100ms during streaming
+  const throttledUpdate = useCallback((text) => {
+    const now = Date.now()
+    if (now - lastUpdateTimeRef.current >= 100) {
+      updateLastMessage(text)
+      lastUpdateTimeRef.current = now
+    } else {
+      if (updateThrottleRef.current) {
+        clearTimeout(updateThrottleRef.current)
+      }
+      updateThrottleRef.current = setTimeout(() => {
+        updateLastMessage(text)
+        lastUpdateTimeRef.current = Date.now()
+      }, 100 - (now - lastUpdateTimeRef.current))
+    }
+  }, [updateLastMessage])
+
+  const sendMessage = useCallback(async (e) => {
     e.preventDefault()
-    if (!input.trim()) return
+    if (!input.trim() || streaming) return
     const userMsg = { role: 'user', content: input }
-    setMessages(msgs => [...msgs, userMsg])
+    addMessage(userMsg)
+    const messageText = input
     setInput('')
 
     setStreaming(true)
-    let assistantMsg = { role: 'assistant', content: '' }
-    setMessages(msgs => [...msgs, assistantMsg])
+    setStreamingFlag(true)
+    addMessage({ role: 'assistant', content: '' })
+    lastUpdateTimeRef.current = Date.now()
+    
     try {
       // Streaming fetch to backend
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(localStorage.token ? { Authorization: 'Bearer ' + localStorage.token } : {}) },
-        body: JSON.stringify({ message: input, context: {} }),
+        body: JSON.stringify({ message: messageText, context: {} }),
       })
       if (!response.body) throw new Error('No stream from backend')
       const reader = response.body.getReader()
+      const decoder = new TextDecoder()
       let text = ''
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        text += new TextDecoder().decode(value)
-        // Expect server just to stream the assistant's text directly (simple protocol), update as it comes in
-        assistantMsg.content = text
-        setMessages(msgs => {
-          const arr = [...msgs]
-          arr[arr.length-1] = { ...assistantMsg }
-          return arr
-        })
+        text += decoder.decode(value, { stream: true })
+        throttledUpdate(text)
       }
+      // Final update to ensure all content is saved
+      updateLastMessage(text)
       setStreaming(false)
+      setStreamingFlag(false)
     } catch (e) {
       setStreaming(false)
-      assistantMsg.content = '(AI failed to respond: ' + e.message + ')'
-      setMessages(msgs => {
-        const arr = [...msgs]
-        arr[arr.length-1] = { ...assistantMsg }
-        return arr
-      })
+      setStreamingFlag(false)
+      updateLastMessage('(AI failed to respond: ' + e.message + ')')
     }
-  }
+  }, [input, streaming, addMessage, updateLastMessage, throttledUpdate, setStreamingFlag])
 
   // Escape key closes modal
   useEffect(() => {
@@ -82,15 +111,75 @@ export default function ChatWidget() {
         <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={()=>setOpen(false)}></div>
         <div className="relative mb-7 mr-7 w-full max-w-lg overflow-hidden rounded-2xl bg-white/95 shadow-2xl ring-1 ring-slate-900/10 dark:bg-slate-900/95 dark:ring-slate-800 flex flex-col" style={{height: '600px'}}>
           <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800">
-            <h3 className="font-semibold text-lg">AI Tutor Chat</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="font-semibold text-lg">AI Tutor Chat</h3>
+              <button
+                onClick={startNewChat}
+                className="text-xs bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 px-2 py-1 rounded hover:bg-indigo-200 dark:hover:bg-indigo-900/50"
+                title="Start New Chat"
+              >
+                + New
+              </button>
+              <button
+                onClick={() => setShowHistory(!showHistory)}
+                className="text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-2 py-1 rounded hover:bg-slate-200 dark:hover:bg-slate-700"
+                title="Chat History"
+              >
+                📚
+              </button>
+            </div>
             <button className="text-slate-400 hover:text-rose-500 text-2xl leading-none" aria-label="Close chat" onClick={()=>setOpen(false)}>&times;</button>
           </div>
-          <div className="px-4 pt-4 pb-16 flex-1 overflow-y-auto flex flex-col gap-3">
-            {messages.map((m, i) => (
+          
+          {/* Chat History Sidebar */}
+          {showHistory && (
+            <div className="absolute left-0 top-14 bottom-14 w-64 bg-slate-50 dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 overflow-y-auto z-10">
+              <div className="p-3">
+                <h4 className="font-semibold text-sm mb-2">Chat History</h4>
+                <div className="space-y-1">
+                  {chatHistory.length === 0 ? (
+                    <p className="text-xs text-slate-500 dark:text-slate-400 p-2">No past chats</p>
+                  ) : (
+                    chatHistory.map(chat => (
+                      <div
+                        key={chat.id}
+                        className="p-2 rounded hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer group flex items-center justify-between"
+                        onClick={() => {
+                          loadChat(chat.id)
+                          setShowHistory(false)
+                        }}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-slate-700 dark:text-slate-300 truncate">
+                            {chat.title}
+                          </p>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            {new Date(chat.updatedAt).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            deleteChat(chat.id)
+                          }}
+                          className="opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-700 text-xs"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          
+          <div className={`px-4 pt-4 pb-16 flex-1 overflow-y-auto flex flex-col gap-3 ${showHistory ? 'ml-64' : ''}`}>
+            {currentMessages.map((m, i) => (
               <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div className={`max-w-[80%] rounded-xl px-4 py-2 shadow ${m.role === 'user' ? 'bg-indigo-50 text-slate-900 dark:bg-indigo-900/30' : 'bg-emerald-50 text-emerald-900 dark:bg-slate-800/70'} text-base`}>
                   <MessageContent content={m.content} />
-                  {streaming && i === messages.length-1 && <Blink />}
+                  {streaming && i === currentMessages.length-1 && <Blink />}
                 </div>
               </div>
             ))}
@@ -114,15 +203,19 @@ export default function ChatWidget() {
   )
 }
 
-function MessageContent({ content }) {
-  // Simple markdown renderer for **bold**, *italic*, etc.
-  let html = content
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/`(.+?)`/g, '<code class="bg-slate-200 dark:bg-slate-700 px-1 rounded">$1</code>')
-    .replace(/\n/g, '<br />')
+// Memoized message content to prevent unnecessary re-renders
+const MessageContent = React.memo(function MessageContent({ content }) {
+  // Memoize HTML processing
+  const html = useMemo(() => {
+    return content
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/`(.+?)`/g, '<code class="bg-slate-200 dark:bg-slate-700 px-1 rounded">$1</code>')
+      .replace(/\n/g, '<br />')
+  }, [content])
+  
   return <div dangerouslySetInnerHTML={{ __html: html }} />
-}
+})
 
 function Blink() {
   const [on, setOn] = useState(true)

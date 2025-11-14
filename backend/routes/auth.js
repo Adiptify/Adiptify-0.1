@@ -37,6 +37,19 @@ router.get("/me", auth, async (req, res) => {
   return res.json(user);
 });
 
+// POST /api/auth/proctor-consent - Save proctor consent
+router.post("/proctor-consent", auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    user.proctorConsent = true;
+    await user.save();
+    return res.json({ ok: true, message: "Consent saved" });
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to save consent: " + error.message });
+  }
+});
+
 export default router;
 
 

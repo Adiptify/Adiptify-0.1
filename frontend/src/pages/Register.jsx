@@ -23,17 +23,70 @@ export default function Register() {
   }
 
   return (
-    <div className="mx-auto max-w-sm py-10">
-      <h2 className="mb-4 text-lg font-semibold">Student Registration</h2>
-      <form onSubmit={onSubmit} className="space-y-3">
-        <input className="w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 bg-transparent" placeholder="Student Name" value={name} onChange={e=>setName(e.target.value)} />
-        <input className="w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 bg-transparent" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} />
-        <input type="password" className="w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 bg-transparent" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} />
-        <input className="w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 bg-transparent" placeholder="Student ID (Roll No)" value={studentId} onChange={e=>setStudentId(e.target.value)} />
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        <button className="w-full rounded bg-slate-900 px-3 py-2 text-white dark:bg-slate-100 dark:text-slate-900">Register as Student</button>
+    <div className="mx-auto max-w-md py-12 animate-fadeIn">
+      <div className="text-center mb-8">
+        <h2 className="text-3xl font-bold gradient-text mb-2">Create Account</h2>
+        <p className="text-slate-600 dark:text-slate-400">Join Adiptify and start your learning journey</p>
+      </div>
+      <form onSubmit={onSubmit} className="space-y-5">
+        <div>
+          <label className="block text-sm font-medium mb-2 text-slate-700 dark:text-slate-300">Full Name</label>
+          <input 
+            className="input-field focus-ring" 
+            placeholder="John Doe" 
+            value={name} 
+            onChange={e=>setName(e.target.value)}
+            required
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-2 text-slate-700 dark:text-slate-300">Email</label>
+          <input 
+            type="email"
+            className="input-field focus-ring" 
+            placeholder="your.email@example.com" 
+            value={email} 
+            onChange={e=>setEmail(e.target.value)}
+            required
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-2 text-slate-700 dark:text-slate-300">Password</label>
+          <input 
+            type="password" 
+            className="input-field focus-ring" 
+            placeholder="Create a secure password" 
+            value={password} 
+            onChange={e=>setPassword(e.target.value)}
+            required
+            minLength={6}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-2 text-slate-700 dark:text-slate-300">Student ID (Roll No) *</label>
+          <input 
+            className="input-field focus-ring" 
+            placeholder="e.g., STU2024001" 
+            value={studentId} 
+            onChange={e=>setStudentId(e.target.value)}
+            required
+          />
+        </div>
+        {error && (
+          <div className="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-3 text-red-700 dark:text-red-400 text-sm animate-slideIn">
+            {error}
+          </div>
+        )}
+        <button 
+          type="submit"
+          className="btn-primary w-full"
+        >
+          Register as Student
+        </button>
       </form>
-      <p className="mt-3 text-sm">Already a student? <Link className="underline" to="/login">Login</Link></p>
+      <p className="mt-6 text-center text-sm text-slate-600 dark:text-slate-400">
+        Already have an account? <Link className="text-indigo-600 dark:text-indigo-400 font-medium hover:underline" to="/login">Sign in here</Link>
+      </p>
     </div>
   )
 }

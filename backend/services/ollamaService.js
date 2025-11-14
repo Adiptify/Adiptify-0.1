@@ -1,5 +1,5 @@
 import ollama from 'ollama';
-import GeneratedQuiz from "../models/GeneratedQuiz.js";
+import GeneratedAssessment from "../models/GeneratedAssessment.js";
 import { config } from "../config/index.js";
 import { QUESTION_GENERATOR, EXPLANATION_GENERATOR, TOPIC_SUMMARY_NOTES, CHATBOT_TEMPLATE } from "../prompts/ollamaPrompts.js";
 
@@ -37,12 +37,59 @@ function coerceArray(response) {
 export function parseItems(resp) {
   const arr = coerceArray(resp);
   const mapped = arr.map((r) => {
-    // Support both schemas
-    const type = r.type || (r.options ? "mcq" : "short");
+    // Support both schemas - handle all question types
+    let type = r.type || (r.options ? "mcq" : "short_answer");
+    
+    // Normalize type names
+    if (type === "short") type = "short_answer";
+    if (type === "code") type = "short_answer"; // Code questions become short_answer
+    
+    // Validate type is one of the allowed types
+    const validTypes = ["mcq", "fill_blank", "short_answer", "match", "reorder"];
+    if (!validTypes.includes(type)) {
+      // Default based on presence of choices
+      type = (r.choices && r.choices.length > 0) ? "mcq" : "short_answer";
+    }
+    
     const choices = r.choices || r.options || [];
-    const answer = r.answer ?? (Number.isInteger(r.correctIndex) && choices[r.correctIndex] !== undefined ? String(choices[r.correctIndex]) : "");
+    
+    // Handle answer based on type
+    let answer = r.answer;
+    if (answer === null || answer === undefined) {
+      // Fallback: try to infer from correctIndex for MCQ
+      if (type === "mcq" && Number.isInteger(r.correctIndex) && choices[r.correctIndex] !== undefined) {
+        answer = String(choices[r.correctIndex]);
+      } else {
+        answer = "";
+      }
+    }
+    
+    // Ensure answer format matches type
+    if (type === "match" && !Array.isArray(answer)) {
+      // Try to convert to array of pairs
+      if (typeof answer === "string") {
+        try {
+          answer = JSON.parse(answer);
+        } catch {
+          answer = [];
+        }
+      } else {
+        answer = [];
+      }
+    }
+    
+    if (type === "reorder" && !Array.isArray(answer)) {
+      // For reorder, answer should be array
+      if (Array.isArray(choices) && choices.length > 0) {
+        answer = choices; // Use choices as correct order
+      } else {
+        answer = [];
+      }
+    }
+    
     const difficulty = normalizeDifficulty(r.difficulty);
     const bloom = normalizeBloom(r.cognitiveLevel, r.bloom);
+    
     return {
       id: r.id,
       type,
@@ -98,18 +145,19 @@ export async function generateQuestionsFromTopic(topic, options = {}, userId = n
   })) : [];
   const parsedItems = parseItems(withSeeds);
 
-  const created = await GeneratedQuiz.create({
+  const created = await GeneratedAssessment.create({
     topic,
+    title: `${topic} Assessment`,
     prompt: reqPrompt,
     sourceModel: config.ollamaModel,
     seedId: `seed_${topic.replace(/\s+/g,'_')}_${timestamp}`,
     items: withSeeds,
     rawResponse,
-    parsedItems,
+    validated: parsedItems.length > 0,
     createdBy: userId || undefined,
     status: "draft",
   });
-  return { quiz: created, parsedItems };
+  return { assessment: created, parsedItems, items: parsedItems };
 }
 
 export const __test__ = { parseItems, validateItem };

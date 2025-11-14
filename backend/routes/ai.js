@@ -1,7 +1,7 @@
 import express from "express";
 import { auth } from "../middleware/auth.js";
 import { generateQuestionsFromTopic, parseItems } from "../services/ollamaService.js";
-import GeneratedQuiz from "../models/GeneratedQuiz.js";
+import GeneratedAssessment from "../models/GeneratedAssessment.js";
 import Item from "../models/Item.js";
 import ollama from "ollama";
 import { config } from "../config/index.js";
@@ -18,20 +18,17 @@ router.post("/generate", auth, async (req, res) => {
   // Reuse: check for published within 30 days with the same topic and levels
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   if (levels && typeof levels === "object") {
-    let cached = await GeneratedQuiz.findOne({
+    let cached = await GeneratedAssessment.findOne({
       topic,
       status: { $in: ["draft", "published"] },
       createdAt: { $gte: since },
-      $or: [
-        { "levels.easy": levels.easy || 0, "levels.medium": levels.medium || 0, "levels.hard": levels.hard || 0 },
-        { levels: { $exists: false } },
-      ],
+      // Match by topic and status only
     });
     if (cached) {
       // If published but not linked, or draft with saveToBank=true → publish now
       if ((cached.status === "published" && (!cached.linkedItemIds || cached.linkedItemIds.length === 0)) || (cached.status !== "published" && !!saveToBank)) {
-        let itemsToSave = Array.isArray(cached.parsedItems) && cached.parsedItems.length
-          ? cached.parsedItems
+        let itemsToSave = Array.isArray(cached.items) && cached.items.length
+          ? cached.items
           : parseItems(cached.items || []);
 
         if (!itemsToSave || itemsToSave.length === 0) {
@@ -53,51 +50,59 @@ router.post("/generate", auth, async (req, res) => {
           }));
         }
 
-        const docs = await Item.insertMany(itemsToSave.map((p) => ({
-          type: p.type || "mcq",
-          questionType: p.questionType || p.type || "mcq",
-          question: p.question,
-          choices: p.choices || [],
-          answer: p.answer,
-          difficulty: p.difficulty,
-          bloom: p.bloom,
-          cognitiveLevel: p.cognitiveLevel || p.bloom,
-          topics: (p.topics && p.topics.length ? p.topics : [topic]),
-          skills: p.skills || [],
-          hints: p.hints || [],
-          explanation: p.explanation || "",
-          createdBy: req.user?._id,
-          seedId: p.id,
-          aiGenerated: true,
-        })));
+        const docs = await Item.insertMany(itemsToSave.map((p) => {
+          const itemType = p.type || "mcq";
+          // Set grading method based on type
+          let gradingMethod = p.gradingMethod;
+          if (!gradingMethod) {
+            if (itemType === "mcq") gradingMethod = "exact";
+            else if (itemType === "fill_blank") gradingMethod = "levenshtein";
+            else if (itemType === "short_answer") gradingMethod = "semantic";
+            else if (itemType === "match") gradingMethod = "pair_match";
+            else if (itemType === "reorder") gradingMethod = "sequence_check";
+            else gradingMethod = "exact";
+          }
+          return {
+            type: itemType,
+            questionType: p.questionType || p.type || itemType,
+            question: p.question,
+            choices: p.choices || [],
+            answer: p.answer,
+            gradingMethod,
+            difficulty: p.difficulty,
+            bloom: p.bloom,
+            cognitiveLevel: p.cognitiveLevel || p.bloom,
+            topics: (p.topics && p.topics.length ? p.topics : [topic]),
+            skills: p.skills || [],
+            hints: p.hints || [],
+            explanation: p.explanation || "",
+            createdBy: req.user?._id,
+            seedId: p.id,
+            aiGenerated: true,
+          };
+        }));
 
         cached.status = "published";
         cached.linkedItemIds = docs.map((d) => d._id);
-        cached.levels = { easy: Number(levels.easy || 0), medium: Number(levels.medium || 0), hard: Number(levels.hard || 0) };
+        // Remove levels field - not used in GeneratedAssessment
         cached.publishedAt = new Date();
         cached.publishedBy = req.user?._id;
         await cached.save();
       }
 
-      return res.json({ generatedQuizId: cached._id, linkedItemIds: cached.linkedItemIds || [], cacheHit: true });
+      return res.json({ generatedAssessmentId: cached._id, linkedItemIds: cached.linkedItemIds || [], cacheHit: true });
     }
   }
 
-  const { quiz, parsedItems } = await generateQuestionsFromTopic(topic, { levels }, req.user?._id);
-  if (levels && typeof levels === "object") {
-    quiz.levels = {
-      easy: Number(levels.easy || 0),
-      medium: Number(levels.medium || 0),
-      hard: Number(levels.hard || 0),
-    };
-    await quiz.save();
-  }
-
+  const result = await generateQuestionsFromTopic(topic, { levels }, req.user?._id);
+  const assessment = result.assessment || result.quiz;
+  const parsedItems = result.parsedItems || result.items || [];
+  
   if (saveToBank) {
     let itemsToSave = parsedItems;
     // Fallback scaffold if AI returned nothing
     if (!Array.isArray(itemsToSave) || itemsToSave.length === 0) {
-      const total = (quiz.levels?.easy || 0) + (quiz.levels?.medium || 0) + (quiz.levels?.hard || 0) || 3;
+      const total = (levels?.easy || 0) + (levels?.medium || 0) + (levels?.hard || 0) || 3;
       itemsToSave = Array.from({ length: total }).map((_, i) => ({
         id: `seed_${topic.replace(/\s+/g,'_')}_${Date.now()}_${i}`,
         type: "mcq",
@@ -116,73 +121,103 @@ router.post("/generate", auth, async (req, res) => {
     }
 
     const docs = await Item.insertMany(
-      itemsToSave.map((p) => ({
-        type: p.type || "mcq",
-        questionType: p.questionType || p.type || "mcq",
-        question: p.question,
-        choices: p.choices || [],
-        answer: p.answer,
-        difficulty: p.difficulty,
-        bloom: p.bloom,
-        cognitiveLevel: p.cognitiveLevel || p.bloom,
-        topics: (p.topics && p.topics.length ? p.topics : [topic]),
-        skills: p.skills || [],
-        hints: p.hints || [],
-        explanation: p.explanation || "",
-        createdBy: req.user?._id,
-        seedId: p.id,
-        aiGenerated: true,
-      }))
+      itemsToSave.map((p) => {
+        const itemType = p.type || "mcq";
+        // Set grading method based on type
+        let gradingMethod = p.gradingMethod;
+        if (!gradingMethod) {
+          if (itemType === "mcq") gradingMethod = "exact";
+          else if (itemType === "fill_blank") gradingMethod = "levenshtein";
+          else if (itemType === "short_answer") gradingMethod = "semantic";
+          else if (itemType === "match") gradingMethod = "pair_match";
+          else if (itemType === "reorder") gradingMethod = "sequence_check";
+          else gradingMethod = "exact";
+        }
+        return {
+          type: itemType,
+          questionType: p.questionType || p.type || itemType,
+          question: p.question,
+          choices: p.choices || [],
+          answer: p.answer,
+          gradingMethod,
+          difficulty: p.difficulty,
+          bloom: p.bloom,
+          cognitiveLevel: p.cognitiveLevel || p.bloom,
+          topics: (p.topics && p.topics.length ? p.topics : [topic]),
+          skills: p.skills || [],
+          hints: p.hints || [],
+          explanation: p.explanation || "",
+          createdBy: req.user?._id,
+          seedId: p.id,
+          aiGenerated: true,
+        };
+      })
     );
-    quiz.status = "published";
-    quiz.linkedItemIds = docs.map((d) => d._id);
-    quiz.publishedAt = new Date();
-    quiz.publishedBy = req.user?._id;
-    await quiz.save();
+    assessment.status = "published";
+    assessment.linkedItemIds = docs.map((d) => d._id);
+    assessment.publishedAt = new Date();
+    assessment.publishedBy = req.user?._id;
+    await assessment.save();
   }
 
-  return res.json({ generatedQuizId: quiz._id, linkedItemIds: quiz.linkedItemIds || [] });
+  return res.json({ generatedAssessmentId: assessment._id, linkedItemIds: assessment.linkedItemIds || [] });
 });
 
 // GET /api/ai/generated/:id
 router.get("/generated/:id", auth, async (req, res) => {
-  const doc = await GeneratedQuiz.findById(req.params.id).lean();
+  const doc = await GeneratedAssessment.findById(req.params.id).lean();
   if (!doc) return res.status(404).json({ error: "Not found" });
   return res.json(doc);
 });
 
 // POST /api/ai/publish/:id
 router.post("/publish/:id", auth, async (req, res) => {
-  const quiz = await GeneratedQuiz.findById(req.params.id);
-  if (!quiz) return res.status(404).json({ error: "Not found" });
-  if (quiz.status === "published") return res.json({ generatedQuizId: quiz._id, linkedItemIds: quiz.linkedItemIds || [] });
+  const assessment = await GeneratedAssessment.findById(req.params.id);
+  if (!assessment) return res.status(404).json({ error: "Not found" });
+  if (assessment.status === "published") return res.json({ generatedAssessmentId: assessment._id, linkedItemIds: assessment.linkedItemIds || [] });
 
-  const toSave = Array.isArray(quiz.parsedItems) ? quiz.parsedItems : [];
+  const toSave = Array.isArray(assessment.items) ? assessment.items : [];
   const docs = await Item.insertMany(
-    toSave.map((p) => ({
-      type: p.type || "mcq",
-      question: p.question,
-      choices: p.choices || [],
-      answer: p.answer,
-      difficulty: p.difficulty,
-      bloom: p.bloom,
-      topics: p.topics || [quiz.topic],
-      skills: p.skills || [],
-      hints: p.hints || [],
-      explanation: p.explanation || "",
-      createdBy: req.user?._id,
-      seedId: p.id,
-      aiGenerated: true,
-    }))
+    toSave.map((p) => {
+      const itemType = p.type || "mcq";
+      // Set grading method based on type
+      let gradingMethod = p.gradingMethod;
+      if (!gradingMethod) {
+        if (itemType === "mcq") gradingMethod = "exact";
+        else if (itemType === "fill_blank") gradingMethod = "levenshtein";
+        else if (itemType === "short_answer") gradingMethod = "semantic";
+        else if (itemType === "match") gradingMethod = "pair_match";
+        else if (itemType === "reorder") gradingMethod = "sequence_check";
+        else gradingMethod = "exact";
+      }
+      return {
+        type: itemType,
+        questionType: p.questionType || p.type || itemType,
+        question: p.question,
+        choices: p.choices || [],
+        answer: p.answer,
+        gradingMethod,
+        difficulty: p.difficulty,
+        bloom: p.bloom,
+        cognitiveLevel: p.cognitiveLevel || p.bloom,
+        topics: p.topics || [assessment.topic || topic],
+        skills: p.skills || [],
+        hints: p.hints || [],
+        explanation: p.explanation || "",
+        createdBy: req.user?._id,
+        seedId: p.id,
+        aiGenerated: true,
+      };
+    })
   );
 
-  quiz.status = "published";
-  quiz.linkedItemIds = docs.map((d) => d._id);
-  quiz.publishedAt = new Date();
-  quiz.publishedBy = req.user?._id;
-  await quiz.save();
+  assessment.status = "published";
+  assessment.linkedItemIds = docs.map((d) => d._id);
+  assessment.publishedAt = new Date();
+  assessment.publishedBy = req.user?._id;
+  await assessment.save();
 
-  return res.json({ generatedQuizId: quiz._id, linkedItemIds: quiz.linkedItemIds });
+  return res.json({ generatedAssessmentId: assessment._id, linkedItemIds: assessment.linkedItemIds });
 });
 
 // POST /api/ai/explain { questionId, userAnswer, topic }
@@ -229,7 +264,7 @@ router.post("/notes", auth, async (req, res) => {
     });
     aiResponse = String(result.response || "");
     tokens = result.eval_count || 0;
-    const created = await GeneratedQuiz.create({ topic, prompt: userPrompt, sourceModel: config.ollamaModel, items: [], status: "draft", parsedItems: [], rawResponse: { notesMd: aiResponse } });
+    const created = await GeneratedAssessment.create({ topic, title: `${topic} Notes`, prompt: userPrompt, sourceModel: config.ollamaModel, items: [], validated: false, status: "draft", rawResponse: { notesMd: aiResponse } });
     created.notes = aiResponse;
     await created.save();
     await logAILLM({

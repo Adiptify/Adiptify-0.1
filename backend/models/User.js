@@ -15,6 +15,8 @@ const learnerProfileSchema = new mongoose.Schema(
       ),
       default: {},
     },
+    preferredMode: { type: String, enum: ["mcq", "fill_blank", "short_answer", "match", "reorder", "mixed"], default: "mixed" },
+    lastActiveAt: { type: Date, default: () => new Date() }
   },
   { _id: false }
 );
@@ -27,6 +29,8 @@ const userSchema = new mongoose.Schema(
     studentId: { type: String, required: function() { return this.role === 'student'; }, index: true, sparse: true, unique: false },
     role: { type: String, enum: ["student", "instructor", "admin"], default: "student" },
     learnerProfile: { type: learnerProfileSchema, default: () => ({}) },
+    proctorConsent: { type: Boolean, default: false },
+    lockedSubjects: { type: [String], default: [] } // Subjects locked for this user
   },
   { timestamps: true }
 );

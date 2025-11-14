@@ -2,8 +2,12 @@ import { useEffect, useState } from 'react';
 import PageContainer from '../../components/PageContainer.jsx';
 import Sidebar from '../../components/Sidebar.jsx';
 import { apiFetch } from '../../api/client.js';
+import UserManagement from './UserManagement.jsx';
+import BulkUpload from './BulkUpload.jsx';
+import QuestionBank from './QuestionBank.jsx';
+import AssessmentReports from './AssessmentReports.jsx';
 
-const TABS = ['AI Analytics', 'Issue Reports', 'User Management', 'Question Bank'];
+const TABS = ['AI Analytics', 'Issue Reports', 'User Management', 'Bulk Upload', 'Question Bank', 'Assessment Reports'];
 
 export default function AdminDashboard() {
   const [tab, setTab] = useState(TABS[0]);
@@ -149,10 +153,16 @@ export default function AdminDashboard() {
             </div>
           )}
           {tab === 'User Management' && (
-            <div className="text-slate-400 p-12">User management not yet implemented.</div>
+            <UserManagement />
+          )}
+          {tab === 'Bulk Upload' && (
+            <BulkUpload />
           )}
           {tab === 'Question Bank' && (
-            <div className="text-slate-400 p-12">Question bank management coming soon.</div>
+            <QuestionBank />
+          )}
+          {tab === 'Assessment Reports' && (
+            <AssessmentReports />
           )} 
         </PageContainer>
       </main>

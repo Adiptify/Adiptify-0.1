@@ -3,6 +3,7 @@ import PageContainer from '../../components/PageContainer.jsx'
 import Sidebar from '../../components/Sidebar.jsx'
 import ChatWidget from '../../components/ChatWidget.jsx'
 import ChatPanel from '../../components/ChatPanel.jsx'
+import EmptyState from '../../components/EmptyState.jsx'
 import { apiFetch } from '../../api/client.js'
 
 export default function StudentDashboard() {
@@ -12,7 +13,7 @@ export default function StudentDashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [showQuizModal, setShowQuizModal] = useState(false)
-  const [quizConfig, setQuizConfig] = useState({ topic: '', questionCount: 5, difficulty: 'medium', mode: 'formative' })
+  const [quizConfig, setQuizConfig] = useState({ topic: '', questionCount: 5, mode: 'formative' })
   const [isStarting, setIsStarting] = useState(false)
 
   useEffect(() => {
@@ -27,21 +28,20 @@ export default function StudentDashboard() {
         const masteryObj = topicMap instanceof Map ? Object.fromEntries(topicMap) : (typeof topicMap === 'object' ? topicMap : {})
         setMastery(masteryObj)
         setTopics(Object.keys(masteryObj))
-        // Fetch last 5 completed quiz sessions
+        // Fetch last 5 completed assessment sessions
         let sessions = []
         if (me._id) {
           try {
-            // Assume an API endpoint returns sessions for the current user
-            sessions = await apiFetch(`/api/quiz/sessions?status=completed&limit=5`)
+            sessions = await apiFetch(`/api/assessment/sessions?status=completed&limit=5`)
           } catch (e) { /* backend may not have this endpoint yet */ }
         }
         setQuizzes((sessions && sessions.length) ? sessions.map(s=>({
           id: s._id,
-          topic: s.topics?.[0] || '-',
-          score: s.score,
-          difficulty: (s.metadata?.rulesUsed?.difficultyBuckets || []).join(', ') || '-',
-          time: s.completedAt ? Math.round((new Date(s.completedAt) - new Date(s.startedAt))/60000)+"min" : '-',
-          date: s.completedAt ? new Date(s.completedAt).toLocaleDateString() : '-',
+          topic: s.metadata?.requestedTopics?.[0] || s.topics?.[0] || 'General',
+          score: s.score || 0,
+          difficulty: 'Adaptive', // Difficulty is now adaptive based on mastery
+          time: s.completedAt && s.startedAt ? Math.round((new Date(s.completedAt) - new Date(s.startedAt))/60000)+"min" : '-',
+          date: s.completedAt ? new Date(s.completedAt).toLocaleDateString() : new Date(s.createdAt).toLocaleDateString(),
         })) : [])
       } catch (e) {
         setError('Failed to load data. ' + (e.message||''))
@@ -52,23 +52,23 @@ export default function StudentDashboard() {
     load()
   }, [])
 
-  async function handleStartQuiz() {
+  async function handleStartAssessment() {
     if (!quizConfig.topic.trim()) {
       setError('Please enter a topic')
       return
     }
     try {
       setError('')
-      const difficultyMap = { easy: [1,2], medium: [2,3], hard: [4,5] }
-      // Start quiz quickly; backend will queue generation if needed
+      // Difficulty will be determined automatically by backend based on user mastery
+      // Start assessment quickly; backend will queue generation if needed
       setIsStarting(true)
-      const session = await apiFetch('/api/quiz/start', {
+      const session = await apiFetch('/api/assessment/start', {
         method: 'POST',
         body: {
           mode: quizConfig.mode,
           requestedTopics: [quizConfig.topic],
-          limit: quizConfig.questionCount,
-          difficulty: difficultyMap[quizConfig.difficulty]
+          limit: quizConfig.questionCount
+          // No difficulty parameter - backend will adapt based on user mastery
         },
       })
       // If background generation queued, poll a few times
@@ -76,20 +76,20 @@ export default function StudentDashboard() {
         for (let i = 0; i < 5; i++) {
           await new Promise(r => setTimeout(r, 2500))
           try {
-            const retried = await apiFetch('/api/quiz/start', {
+            const retried = await apiFetch('/api/assessment/start', {
               method: 'POST',
               body: {
                 mode: quizConfig.mode,
                 requestedTopics: [quizConfig.topic],
-                limit: quizConfig.questionCount,
-                difficulty: difficultyMap[quizConfig.difficulty]
+                limit: quizConfig.questionCount
+                // No difficulty parameter - backend will adapt based on user mastery
               },
             })
             if (!retried?.queued) {
-              sessionStorage.setItem('session', JSON.stringify(retried))
+              sessionStorage.setItem('assessmentSession', JSON.stringify(retried))
               setShowQuizModal(false)
               setIsStarting(false)
-              window.location.href = '/quiz'
+              window.location.href = '/assessment'
               return
             }
           } catch {}
@@ -98,13 +98,13 @@ export default function StudentDashboard() {
         setError('Still preparing questions… please try again in a moment.')
         return
       }
-      sessionStorage.setItem('session', JSON.stringify(session))
+      sessionStorage.setItem('assessmentSession', JSON.stringify(session))
       setShowQuizModal(false)
       setIsStarting(false)
-      window.location.href = '/quiz'
+      window.location.href = '/assessment'
     } catch (e) {
       setIsStarting(false)
-      setError('Failed to start quiz: ' + (e.message||''))
+      setError('Failed to start assessment: ' + (e.message||''))
     }
   }
 
@@ -113,78 +113,152 @@ export default function StudentDashboard() {
       <Sidebar />
       <main className="flex-1">
         <PageContainer>
-          <div className="mb-6 flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
-            <div>
-              <div className="text-3xl font-semibold tracking-tight">Welcome back, Student!</div>
-              <div className="text-base text-slate-500">Here is your current mastery progress.</div>
+          <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center animate-fadeIn">
+            <div className="flex-1">
+              <div className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900 dark:text-slate-100 mb-2">
+                Welcome back! 👋
+              </div>
+              <div className="text-base sm:text-lg text-slate-600 dark:text-slate-400">
+                Track your mastery progress across subjects and review your recent assessment attempts.
+              </div>
             </div>
-            <button onClick={() => setShowQuizModal(true)} className="mt-3 rounded-lg bg-gradient-to-r from-indigo-600 to-emerald-500 px-6 py-3 text-lg font-bold text-white shadow hover:brightness-105 transition">Start Quiz</button>
+            <button 
+              onClick={() => setShowQuizModal(true)} 
+              className="btn-primary text-base sm:text-lg px-6 sm:px-8 py-3 sm:py-4 whitespace-nowrap shrink-0"
+            >
+              Start Assessment
+            </button>
           </div>
-          <section className="mb-8">
-            <div className="mb-2 text-xl font-medium">Mastery Heatmap</div>
-            <div className="flex gap-2 overflow-x-auto rounded-xl bg-slate-50 p-4 shadow-inner dark:bg-slate-800">
-              {topics.length ? topics.map(topic => {
+          <section className="mb-10">
+            <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <h3 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Mastery Heatmap</h3>
+              {topics.length > 0 && (
+                <span className="text-sm font-medium text-slate-600 dark:text-slate-400 bg-gradient-to-r from-indigo-100 to-blue-100 dark:from-indigo-900/30 dark:to-blue-900/30 px-4 py-1.5 rounded-full border border-indigo-200 dark:border-indigo-800 inline-block w-fit">
+                  {topics.length} subject{topics.length !== 1 ? 's' : ''} tracked
+                </span>
+              )}
+            </div>
+            <div className="flex gap-4 sm:gap-6 overflow-x-auto rounded-2xl bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-800 p-6 sm:p-8 shadow-2xl border border-slate-200 dark:border-slate-700 min-h-[240px] scrollbar-thin scrollbar-thumb-slate-300 dark:scrollbar-thumb-slate-600 scrollbar-track-transparent">
+              {topics.length ? topics.map((topic) => {
                 const m = mastery[topic] || { mastery: 0, attempts: 0 }
+                // Handle both old (0-1) and new (0-100) formats
+                let masteryPercent = m.mastery || 0;
+                if (masteryPercent < 1 && masteryPercent > 0) {
+                  masteryPercent = Math.round(masteryPercent * 100); // Old format: convert to percentage
+                } else {
+                  masteryPercent = Math.round(masteryPercent); // New format: already percentage
+                }
                 return (
-                  <div key={topic} className="flex flex-col items-center gap-1 min-w-[90px]">
+                  <div 
+                    key={topic} 
+                    className="flex flex-col items-center gap-3 min-w-[140px] sm:min-w-[160px] p-5 rounded-xl hover:bg-white/90 dark:hover:bg-slate-700/50 transition-all duration-300 cursor-pointer group backdrop-blur-sm border border-transparent hover:border-indigo-200 dark:hover:border-indigo-800"
+                    title={`${topic}: ${masteryPercent}% mastery | ${m.attempts || 0} attempts`}
+                  >
                     <div className={
-                      `h-11 w-11 rounded-full border-2 transition-all flex items-center justify-center text-lg font-bold ${
-                        m.mastery > 80 ? 'bg-green-400/40 text-green-700 border-green-300' :
-                        m.mastery > 60 ? 'bg-yellow-200/40 text-amber-700 border-yellow-200' :
-                        m.mastery > 0 ? 'bg-rose-200/40 text-rose-700 border-rose-200' :
-                          'bg-gray-200/60 text-gray-400 border-gray-200'}
+                      `h-28 w-28 sm:h-32 sm:w-32 rounded-full border-4 transition-all duration-300 flex items-center justify-center text-2xl sm:text-3xl font-extrabold shadow-xl group-hover:scale-110 group-hover:shadow-2xl ${
+                        masteryPercent >= 80 ? 'bg-gradient-to-br from-green-400 via-emerald-500 to-green-600 text-white border-green-500 shadow-green-400/50 dark:shadow-green-600/50' :
+                        masteryPercent >= 60 ? 'bg-gradient-to-br from-yellow-300 via-amber-400 to-yellow-500 text-amber-900 border-yellow-400 shadow-yellow-400/50 dark:shadow-yellow-600/50' :
+                        masteryPercent > 0 ? 'bg-gradient-to-br from-rose-300 via-pink-400 to-rose-500 text-rose-900 border-rose-400 shadow-rose-400/50 dark:shadow-rose-600/50' :
+                          'bg-gradient-to-br from-gray-300 via-slate-400 to-gray-500 text-gray-700 border-gray-400 shadow-gray-400/50 dark:shadow-gray-600/50'}
                     }`
-                    } title={topic + ' mastery: ' + Math.round(m.mastery||0) + '% | Attempts: ' + (m.attempts||0)}>{Math.round(m.mastery || 0)}%</div>
-                    <div className="text-xs font-medium text-slate-500 dark:text-slate-300">{topic}</div>
+                    }>
+                      {masteryPercent}%
+                    </div>
+                    <div className="text-sm sm:text-base font-bold text-slate-800 dark:text-slate-200 text-center max-w-[140px] sm:max-w-[160px] truncate group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors px-2">{topic}</div>
+                    <div className="text-xs font-semibold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-3 py-1.5 rounded-full whitespace-nowrap">{m.attempts || 0} attempt{m.attempts !== 1 ? 's' : ''}</div>
                   </div>
                 )
-              }) : <div className="text-sm text-slate-400">No mastery data yet.</div>}
+              }) : (
+                <div className="w-full py-12 text-center">
+                  <div className="text-4xl mb-3">📚</div>
+                  <p className="text-slate-500 dark:text-slate-400">No mastery data yet. Start your first assessment to begin tracking progress!</p>
+                </div>
+              )}
             </div>
           </section>
           <section>
-            <div className="mb-2 text-xl font-medium">Recent Quiz Attempts</div>
-            <div className="overflow-x-auto">
-              <table className="min-w-[470px] w-full text-sm rounded-xl bg-slate-50 shadow-lg dark:bg-slate-900">
-                <thead>
-                  <tr className="text-slate-600 dark:text-slate-200">
-                    <th className="p-3 font-medium text-left">Topic</th>
-                    <th className="p-3 font-medium text-left">Score</th>
-                    <th className="p-3 font-medium text-left">Difficulty</th>
-                    <th className="p-3 font-medium text-left">Time</th>
-                    <th className="p-3 font-medium text-left">Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {quizzes.map(q => (
-                    <tr key={q.id} className="border-t border-slate-200 dark:border-slate-800 hover:bg-indigo-50/40 dark:hover:bg-indigo-900/20 transition-all">
-                      <td className="p-3">{q.topic}</td>
-                      <td className="p-3">{q.score}%</td>
-                      <td className="p-3">{q.difficulty}</td>
-                      <td className="p-3">{q.time}</td>
-                      <td className="p-3">{q.date}</td>
-                    </tr>
-                  ))}
-                  {!loading && quizzes.length === 0 && <tr><td colSpan={5} className="text-center text-slate-400 py-6">No recent quizzes found.</td></tr>}
-                </tbody>
-              </table>
-              {loading && <div className="py-6 text-center text-slate-400">Loading…</div>}
-              {error && <div className="text-red-600 py-3">{error}</div>}
+            <div className="mb-6 flex items-center justify-between">
+              <h3 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Recent Assessment Attempts</h3>
             </div>
+            {loading ? (
+              <div className="rounded-2xl border-2 border-slate-200 dark:border-slate-800 shadow-xl bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-800 p-16 text-center">
+                <div className="inline-block h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent mb-4"></div>
+                <p className="text-slate-600 dark:text-slate-400 font-medium">Loading assessment history...</p>
+              </div>
+            ) : error ? (
+              <div className="rounded-2xl border-2 border-red-200 dark:border-red-800 bg-gradient-to-br from-red-50 to-rose-50 dark:from-red-900/20 dark:to-rose-900/20 p-6 text-red-700 dark:text-red-400 shadow-lg">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">⚠️</span>
+                  <span className="font-semibold">{error}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-2xl border-2 border-slate-200 dark:border-slate-800 shadow-2xl bg-gradient-to-br from-white to-slate-50 dark:from-slate-900 dark:to-slate-800">
+                <table className="min-w-[600px] w-full text-sm">
+                  <thead className="bg-gradient-to-r from-indigo-500 via-blue-500 to-indigo-600 dark:from-indigo-700 dark:via-blue-700 dark:to-indigo-800">
+                    <tr>
+                      <th className="p-5 font-bold text-left text-white">Topic</th>
+                      <th className="p-5 font-bold text-left text-white">Score</th>
+                      <th className="p-5 font-bold text-left text-white">Difficulty</th>
+                      <th className="p-5 font-bold text-left text-white">Time</th>
+                      <th className="p-5 font-bold text-left text-white">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {quizzes.map(q => (
+                      <tr key={q.id} className="border-t border-slate-200 dark:border-slate-700 hover:bg-indigo-50/50 dark:hover:bg-indigo-900/20 transition-all duration-200">
+                        <td className="p-5 font-semibold text-slate-900 dark:text-slate-100">{q.topic}</td>
+                        <td className="p-5">
+                          <span className={`font-extrabold text-2xl ${
+                            q.score >= 80 ? 'text-green-600 dark:text-green-400' :
+                            q.score >= 60 ? 'text-yellow-600 dark:text-yellow-400' :
+                            'text-red-600 dark:text-red-400'
+                          }`}>
+                            {q.score}%
+                          </span>
+                        </td>
+                        <td className="p-5">
+                          <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300 capitalize">
+                            {q.difficulty}
+                          </span>
+                        </td>
+                        <td className="p-5 font-semibold text-slate-700 dark:text-slate-300">{q.time}</td>
+                        <td className="p-5 font-semibold text-slate-700 dark:text-slate-300">{q.date}</td>
+                      </tr>
+                    ))}
+                    {quizzes.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="p-16">
+                          <EmptyState 
+                            icon="📝"
+                            title="No assessments yet"
+                            description="Start your first assessment to see your attempts here!"
+                            action={() => setShowQuizModal(true)}
+                            actionLabel="Start Assessment"
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         </PageContainer>
         <ChatWidget />
       </main>
       {isStarting && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="rounded-2xl bg-white px-8 py-6 text-center shadow-2xl dark:bg-slate-900">
-            <div className="mx-auto mb-3 h-10 w-10 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
-            <div className="text-sm text-slate-600 dark:text-slate-300">Preparing your quiz…</div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fadeIn">
+          <div className="rounded-2xl bg-white px-10 py-8 text-center shadow-2xl dark:bg-slate-900 animate-slideIn">
+            <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-indigo-500 border-t-transparent" />
+            <div className="text-base font-medium text-slate-900 dark:text-slate-100 mb-1">Preparing your assessment…</div>
+            <div className="text-sm text-slate-600 dark:text-slate-400">This may take a few seconds</div>
           </div>
         </div>
       )}
       {showQuizModal && (
         <div 
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fadeIn"
           onClick={(e) => {
             if (e.target === e.currentTarget && !isStarting) {
               setShowQuizModal(false)
@@ -193,59 +267,50 @@ export default function StudentDashboard() {
           }}
         >
           <div 
-            className="rounded-2xl bg-white p-8 shadow-2xl dark:bg-slate-900 w-full max-w-md mx-4"
+            className="rounded-2xl bg-white p-8 shadow-2xl dark:bg-slate-900 w-full max-w-lg mx-4 animate-slideIn border border-slate-200 dark:border-slate-800"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-xl font-semibold">Configure Quiz</h3>
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Configure Assessment</h3>
               <button
                 onClick={() => { setShowQuizModal(false); setError('') }}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-2xl leading-none"
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-3xl leading-none transition-colors w-8 h-8 flex items-center justify-center rounded-full hover:bg-slate-100 dark:hover:bg-slate-800"
                 disabled={isStarting}
               >
                 ×
               </button>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-5">
               <div>
-                <label className="block text-sm font-medium mb-1">Topic *</label>
+                <label className="block text-sm font-semibold mb-2 text-slate-700 dark:text-slate-300">Topic *</label>
                 <input
-                  className="w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 bg-transparent"
+                  className="input-field focus-ring"
                   placeholder="e.g., Machine Learning, Algebra, Geometry"
                   value={quizConfig.topic}
                   onChange={e => setQuizConfig({...quizConfig, topic: e.target.value})}
                   disabled={isStarting}
+                  autoFocus
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium mb-1">Number of Questions</label>
+                <label className="block text-sm font-semibold mb-2 text-slate-700 dark:text-slate-300">Number of Questions</label>
                 <input
                   type="number"
                   min="3"
                   max="20"
-                  className="w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 bg-transparent"
+                  className="input-field focus-ring w-full"
                   value={quizConfig.questionCount}
                   onChange={e => setQuizConfig({...quizConfig, questionCount: parseInt(e.target.value) || 5})}
                   disabled={isStarting}
                 />
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  Difficulty will be automatically adjusted based on your mastery level
+                </p>
               </div>
               <div>
-                <label className="block text-sm font-medium mb-1">Difficulty</label>
+                <label className="block text-sm font-semibold mb-2 text-slate-700 dark:text-slate-300">Mode</label>
                 <select
-                  className="w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 bg-transparent"
-                  value={quizConfig.difficulty}
-                  onChange={e => setQuizConfig({...quizConfig, difficulty: e.target.value})}
-                  disabled={isStarting}
-                >
-                  <option value="easy">Easy</option>
-                  <option value="medium">Medium</option>
-                  <option value="hard">Hard</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Mode</label>
-                <select
-                  className="w-full rounded border border-slate-300 px-3 py-2 dark:border-slate-700 bg-transparent"
+                  className="input-field focus-ring"
                   value={quizConfig.mode}
                   onChange={e => setQuizConfig({...quizConfig, mode: e.target.value})}
                   disabled={isStarting}
@@ -255,24 +320,33 @@ export default function StudentDashboard() {
                   <option value="summative">Summative</option>
                 </select>
               </div>
-              {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-900/20 p-2 rounded">{error}</div>}
+              {error && (
+                <div className="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-3 text-red-700 dark:text-red-400 text-sm animate-slideIn">
+                  {error}
+                </div>
+              )}
               <div className="flex gap-3 pt-2">
                 <button 
-                  onClick={handleStartQuiz} 
+                  onClick={handleStartAssessment} 
                   disabled={isStarting || !quizConfig.topic.trim()}
-                  className="flex-1 rounded bg-indigo-600 px-4 py-2 font-medium text-white disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-105 transition flex items-center justify-center gap-2"
+                  className="btn-primary flex-1 flex items-center justify-center gap-2"
                 >
                   {isStarting ? (
                     <>
                       <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
                       Starting...
                     </>
-                  ) : 'Start Quiz'}
+                  ) : (
+                    <>
+                      <span>🚀</span>
+                      Start Assessment
+                    </>
+                  )}
                 </button>
                 <button 
                   onClick={() => { setShowQuizModal(false); setError('') }} 
                   disabled={isStarting}
-                  className="rounded border px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                  className="btn-secondary"
                 >
                   Cancel
                 </button>

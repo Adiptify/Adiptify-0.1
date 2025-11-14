@@ -1,6 +1,7 @@
 import Item from "../models/Item.js";
+import User from "../models/User.js";
 import { generateQuestionsFromTopic } from "./ollamaService.js";
-import GeneratedQuiz from "../models/GeneratedQuiz.js";
+import GeneratedAssessment from "../models/GeneratedAssessment.js";
 
 // Track ongoing generations to prevent duplicates (with timestamps)
 const ongoingGenerations = new Map();
@@ -20,24 +21,96 @@ export async function selectItems({ userId, sessionContext, limit = 6 }) {
   const mode = sessionContext?.mode || "formative";
   const requestedDifficulty = sessionContext?.difficulty || [];
 
-  // Use requested difficulty if provided, otherwise map mode to difficulty buckets
-  const difficultyBuckets = requestedDifficulty.length ? requestedDifficulty : 
-    (mode === "diagnostic" ? [1, 2, 3] : mode === "summative" ? [3, 4, 5] : [2, 3]);
+  // Determine difficulty buckets: use requested if provided, otherwise adapt based on user mastery
+  let difficultyBuckets = [];
+  if (requestedDifficulty.length) {
+    difficultyBuckets = requestedDifficulty;
+  } else {
+    // Adaptive difficulty based on user mastery
+    if (topics.length > 0 && userId) {
+      try {
+        const user = await User.findById(userId).lean();
+        const topic = topics[0];
+        const learnerProfile = user?.learnerProfile || {};
+        const topicsMap = learnerProfile.topics || {};
+        
+        // Get mastery for the requested topic (handle both Map and object formats)
+        let mastery = 0;
+        if (topicsMap instanceof Map) {
+          mastery = topicsMap.get(topic)?.mastery || 0;
+        } else if (typeof topicsMap === 'object' && topicsMap !== null) {
+          mastery = topicsMap[topic]?.mastery || 0;
+        }
+        
+        // Handle both old (0-1) and new (0-100) formats
+        if (mastery < 1 && mastery > 0) {
+          mastery = Math.round(mastery * 100);
+        } else {
+          mastery = Math.round(mastery);
+        }
+        
+        // Adaptive difficulty selection based on mastery:
+        // 0-30%: Easy (1-2) - Build foundation
+        // 31-60%: Medium (2-3) - Reinforce learning
+        // 61-80%: Medium-Hard (3-4) - Challenge understanding
+        // 81-100%: Hard (4-5) - Advanced mastery
+        if (mastery <= 30) {
+          difficultyBuckets = mode === "diagnostic" ? [1, 2, 3] : [1, 2];
+        } else if (mastery <= 60) {
+          difficultyBuckets = mode === "diagnostic" ? [1, 2, 3] : mode === "summative" ? [3, 4] : [2, 3];
+        } else if (mastery <= 80) {
+          difficultyBuckets = mode === "diagnostic" ? [2, 3, 4] : mode === "summative" ? [4, 5] : [3, 4];
+        } else {
+          difficultyBuckets = mode === "diagnostic" ? [3, 4, 5] : mode === "summative" ? [4, 5] : [4, 5];
+        }
+      } catch (error) {
+        console.error("Error fetching user mastery for adaptive difficulty:", error);
+        // Fallback to mode-based difficulty
+        difficultyBuckets = mode === "diagnostic" ? [1, 2, 3] : mode === "summative" ? [3, 4, 5] : [2, 3];
+      }
+    } else {
+      // No topic or user ID - use mode-based defaults
+      difficultyBuckets = mode === "diagnostic" ? [1, 2, 3] : mode === "summative" ? [3, 4, 5] : [2, 3];
+    }
+  }
 
-  const query = {
-    topics: topics.length ? { $in: topics } : { $exists: true },
-    difficulty: { $in: difficultyBuckets },
-  };
+  // PRIORITY 1: Check for published assessments with linkedItemIds FIRST (no date restriction)
+  let items = [];
+  if (topics.length > 0) {
+    const topic = topics[0];
+    const publishedAssessment = await GeneratedAssessment.findOne({
+      topic: { $regex: new RegExp(`^${topic}$`, 'i') },
+      status: "published",
+      linkedItemIds: { $exists: true, $ne: [] },
+    }).sort({ publishedAt: -1 }).lean();
+    
+    if (publishedAssessment && publishedAssessment.linkedItemIds && publishedAssessment.linkedItemIds.length > 0) {
+      // Use items from published assessment (ignore difficulty filter to use all available items)
+      const publishedItems = await Item.find({
+        _id: { $in: publishedAssessment.linkedItemIds },
+      }).limit(limit).lean();
+      items = publishedItems;
+      console.log(`[RulesEngine] Using ${publishedItems.length} items from published assessment: ${publishedAssessment._id}`);
+    }
+  }
   
-  let items = await Item.find(query).limit(limit).lean();
+  // PRIORITY 2: If still not enough, try to find items by topic and difficulty
+  if (items.length < limit) {
+    const query = {
+      topics: topics.length ? { $in: topics } : { $exists: true },
+      difficulty: { $in: difficultyBuckets },
+    };
+    const additionalItems = await Item.find(query).limit(limit - items.length).lean();
+    items = [...items, ...additionalItems];
+  }
   
-  // If not enough items, try to find published generated quizzes for this topic
+  // PRIORITY 3: If still not enough, try to find published generated assessments for this topic (with date restriction)
   if (items.length < limit && topics.length > 0) {
     const topic = topics[0];
     
-    // First check for recently published quizzes (within last 7 days)
-    const recentCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const generated = await GeneratedQuiz.findOne({
+    // Check for recently published assessments (within last 30 days)
+    const recentCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const generated = await GeneratedAssessment.findOne({
       topic: { $regex: new RegExp(`^${topic}$`, 'i') },
       status: "published",
       linkedItemIds: { $exists: true, $ne: [] },
@@ -45,53 +118,65 @@ export async function selectItems({ userId, sessionContext, limit = 6 }) {
     }).sort({ publishedAt: -1 }).lean();
     
     if (generated && generated.linkedItemIds) {
+      const existingIds = items.map(i => i._id);
       const generatedItems = await Item.find({
-        _id: { $in: generated.linkedItemIds },
-        difficulty: { $in: difficultyBuckets },
+        _id: { $in: generated.linkedItemIds, $nin: existingIds }, // Exclude already selected items
       }).limit(limit - items.length).lean();
       items = [...items, ...generatedItems];
     }
     
-    // Also check draft quizzes that might have items
+    // Also check draft assessments that might have items
     if (items.length < limit) {
-      const draftQuiz = await GeneratedQuiz.findOne({
+      const draftAssessment = await GeneratedAssessment.findOne({
         topic: { $regex: new RegExp(`^${topic}$`, 'i') },
         status: { $in: ["draft", "published"] },
-        parsedItems: { $exists: true, $ne: [] },
+        items: { $exists: true, $ne: [] },
         createdAt: { $gte: recentCutoff },
       }).sort({ createdAt: -1 }).lean();
       
-      if (draftQuiz && draftQuiz.parsedItems && draftQuiz.parsedItems.length > 0) {
+      if (draftAssessment && draftAssessment.items && draftAssessment.items.length > 0) {
         // Auto-publish draft if it has valid items
-        if (draftQuiz.status === "draft" && draftQuiz.parsedItems.length >= limit - items.length) {
-          const itemsToSave = draftQuiz.parsedItems.slice(0, limit - items.length);
+        if (draftAssessment.status === "draft" && draftAssessment.items.length >= limit - items.length) {
+          const itemsToSave = draftAssessment.items.slice(0, limit - items.length);
           const docs = await Item.insertMany(
-            itemsToSave.map((p) => ({
-              type: p.type || "mcq",
-              questionType: p.questionType || p.type || "mcq",
-              question: p.question,
-              choices: p.choices || [],
-              answer: p.answer,
-              difficulty: p.difficulty,
-              bloom: p.bloom,
-              cognitiveLevel: p.cognitiveLevel || p.bloom,
-              topics: (p.topics && p.topics.length ? p.topics : [topic]),
-              skills: p.skills || [],
-              hints: p.hints || [],
-              explanation: p.explanation || "",
-              createdBy: userId,
-              seedId: p.id,
-              aiGenerated: true,
-            }))
+            itemsToSave.map((p) => {
+              const itemType = p.type || "mcq";
+              // Set grading method based on type
+              let gradingMethod = p.gradingMethod;
+              if (!gradingMethod) {
+                if (itemType === "mcq") gradingMethod = "exact";
+                else if (itemType === "fill_blank") gradingMethod = "levenshtein";
+                else if (itemType === "short_answer") gradingMethod = "semantic";
+                else if (itemType === "match") gradingMethod = "pair_match";
+                else if (itemType === "reorder") gradingMethod = "sequence_check";
+                else gradingMethod = "exact";
+              }
+              return {
+                type: itemType,
+                questionType: p.questionType || p.type || itemType,
+                question: p.question,
+                choices: p.choices || [],
+                answer: p.answer,
+                gradingMethod,
+                difficulty: p.difficulty,
+                bloom: p.bloom,
+                cognitiveLevel: p.cognitiveLevel || p.bloom,
+                topics: (p.topics && p.topics.length ? p.topics : [topic]),
+                skills: p.skills || [],
+                hints: p.hints || [],
+                explanation: p.explanation || "",
+                createdBy: userId,
+                seedId: p.id,
+                aiGenerated: true,
+              };
+            })
           );
           
-          draftQuiz.status = "published";
-          draftQuiz.linkedItemIds = docs.map((d) => d._id);
-          draftQuiz.publishedAt = new Date();
-          await GeneratedQuiz.findByIdAndUpdate(draftQuiz._id, {
+          await GeneratedAssessment.findByIdAndUpdate(draftAssessment._id, {
             status: "published",
             linkedItemIds: docs.map((d) => d._id),
             publishedAt: new Date(),
+            publishedBy: userId,
           });
           
           items = [...items, ...docs.map(d => d.toObject())];
@@ -100,7 +185,7 @@ export async function selectItems({ userId, sessionContext, limit = 6 }) {
     }
   }
   
-  // If still not enough, check if generation is already in progress to prevent duplicates
+  // If still not enough, try to generate questions synchronously (with timeout)
   if (items.length < limit && topics.length > 0) {
     const topic = topics[0];
     const generationKey = `${topic.toLowerCase().trim()}_${JSON.stringify(difficultyBuckets)}`;
@@ -116,65 +201,146 @@ export async function selectItems({ userId, sessionContext, limit = 6 }) {
         else levels.hard++;
       });
       
+      // Ensure we have at least some questions
+      if (levels.easy === 0 && levels.medium === 0 && levels.hard === 0) {
+        levels.medium = Math.ceil(limit / 2);
+        levels.easy = Math.floor(limit / 2);
+      }
+      
       // Mark as ongoing with timestamp
       ongoingGenerations.set(generationKey, now);
       
-      // Fire-and-forget generation; do not block the selection path
-      generateQuestionsFromTopic(topic, { levels }, userId)
-        .then(() => {
-          // Keep in map for 2 minutes to prevent immediate duplicates
-          setTimeout(() => {
-            const current = ongoingGenerations.get(generationKey);
-            if (current === now) {
-              ongoingGenerations.delete(generationKey);
-            }
-          }, 120000); // 2 min cooldown
-        })
-        .catch((e) => {
-          console.error("Background generation failed:", e);
+      try {
+        // Try synchronous generation with timeout (20 seconds for AI)
+        console.log(`[RulesEngine] Generating questions for topic: ${topic} with levels:`, levels);
+        const generationPromise = generateQuestionsFromTopic(topic, { levels }, userId);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Generation timeout after 20s')), 20000)
+        );
+        
+        const result = await Promise.race([generationPromise, timeoutPromise]);
+        const parsedItems = result?.parsedItems || result?.items || [];
+        
+        console.log(`[RulesEngine] Generation completed for ${topic}. Got ${parsedItems?.length || 0} items.`);
+        
+        if (parsedItems && parsedItems.length > 0) {
+          // Auto-publish and create items immediately
+          const itemsToSave = parsedItems.slice(0, limit - items.length);
+          const docs = await Item.insertMany(
+            itemsToSave.map((p) => {
+              const itemType = p.type || "mcq";
+              let gradingMethod = p.gradingMethod;
+              if (!gradingMethod) {
+                if (itemType === "mcq") gradingMethod = "exact";
+                else if (itemType === "fill_blank") gradingMethod = "levenshtein";
+                else if (itemType === "short_answer") gradingMethod = "semantic";
+                else if (itemType === "match") gradingMethod = "pair_match";
+                else if (itemType === "reorder") gradingMethod = "sequence_check";
+                else gradingMethod = "exact";
+              }
+              return {
+                type: itemType,
+                questionType: p.questionType || p.type || itemType,
+                question: p.question,
+                choices: p.choices || [],
+                answer: p.answer,
+                gradingMethod,
+                difficulty: p.difficulty,
+                bloom: p.bloom,
+                cognitiveLevel: p.cognitiveLevel || p.bloom,
+                topics: (p.topics && p.topics.length ? p.topics : [topic]),
+                skills: p.skills || [],
+                hints: p.hints || [],
+                explanation: p.explanation || "",
+                createdBy: userId,
+                seedId: p.id,
+                aiGenerated: true,
+              };
+            })
+          );
+          
+          // If result has an assessment, update it to published
+          if (result?.assessment?._id) {
+            await GeneratedAssessment.findByIdAndUpdate(result.assessment._id, {
+              status: "published",
+              linkedItemIds: docs.map((d) => d._id),
+              publishedAt: new Date(),
+              publishedBy: userId,
+            });
+          }
+          
+          items = [...items, ...docs.map(d => d.toObject())].slice(0, limit);
+          console.log(`[RulesEngine] Successfully generated and published ${docs.length} items for topic: ${topic}`);
+        }
+        
+        // Clean up generation key after delay
+        setTimeout(() => {
           const current = ongoingGenerations.get(generationKey);
           if (current === now) {
             ongoingGenerations.delete(generationKey);
           }
-        });
+        }, 120000);
+      } catch (e) {
+        console.error(`[RulesEngine] Generation failed for ${topic}:`, e.message);
+        // Clean up on error
+        const current = ongoingGenerations.get(generationKey);
+        if (current === now) {
+          ongoingGenerations.delete(generationKey);
+        }
+        // Continue with fallback items if generation fails
+      }
     } else {
       console.log(`[RulesEngine] Skipping duplicate generation for ${generationKey} (last: ${Math.round((now - lastGeneration) / 1000)}s ago)`);
     }
   }
   
-  // At: inside selectItems, after 'if (items.length < limit && topics.length > 0) {' (after draftQuiz branch)
+  // At: inside selectItems, after 'if (items.length < limit && topics.length > 0) {' (after draftAssessment branch)
   if (items.length < limit && topics.length > 0) {
-    // Try fallback: scan last 2 'draft' or 'published' GeneratedQuiz for this topic and publish items if possible
+    // Try fallback: scan last 2 'draft' or 'published' GeneratedAssessment for this topic and publish items if possible
     const topic = topics[0];
     const recentCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const recentDrafts = await GeneratedQuiz.find({
+    const recentDrafts = await GeneratedAssessment.find({
       topic: { $regex: new RegExp(`^${topic}$`, 'i') },
       status: { $in: ["draft", "published"] },
       createdAt: { $gte: recentCutoff },
     }).sort({ createdAt: -1 }).limit(2).lean();
-    for (const quiz of recentDrafts) {
-      if (quiz.parsedItems && quiz.parsedItems.length > 0) {
+    for (const assessment of recentDrafts) {
+      if (assessment.items && assessment.items.length > 0) {
         // Insert Items if not already linked/published
-        const alreadyLinked = Array.isArray(quiz.linkedItemIds) && quiz.linkedItemIds.length >= quiz.parsedItems.length;
+        const alreadyLinked = Array.isArray(assessment.linkedItemIds) && assessment.linkedItemIds.length >= assessment.items.length;
         if (!alreadyLinked) {
-          const docs = await Item.insertMany(quiz.parsedItems.map((p) => ({
-            type: p.type || "mcq",
-            questionType: p.questionType || p.type || "mcq",
-            question: p.question,
-            choices: p.choices || [],
-            answer: p.answer,
-            difficulty: p.difficulty,
-            bloom: p.bloom,
-            cognitiveLevel: p.cognitiveLevel || p.bloom,
-            topics: (p.topics && p.topics.length ? p.topics : [topic]),
-            skills: p.skills || [],
-            hints: p.hints || [],
-            explanation: p.explanation || "",
-            createdBy: userId,
-            seedId: p.id,
-            aiGenerated: true,
-          })));
-          await GeneratedQuiz.findByIdAndUpdate(quiz._id, {
+          const docs = await Item.insertMany(assessment.items.map((p) => {
+            const itemType = p.type || "mcq";
+            // Set grading method based on type
+            let gradingMethod = p.gradingMethod;
+            if (!gradingMethod) {
+              if (itemType === "mcq") gradingMethod = "exact";
+              else if (itemType === "fill_blank") gradingMethod = "levenshtein";
+              else if (itemType === "short_answer") gradingMethod = "semantic";
+              else if (itemType === "match") gradingMethod = "pair_match";
+              else if (itemType === "reorder") gradingMethod = "sequence_check";
+              else gradingMethod = "exact";
+            }
+            return {
+              type: itemType,
+              questionType: p.questionType || p.type || itemType,
+              question: p.question,
+              choices: p.choices || [],
+              answer: p.answer,
+              gradingMethod,
+              difficulty: p.difficulty,
+              bloom: p.bloom,
+              cognitiveLevel: p.cognitiveLevel || p.bloom,
+              topics: (p.topics && p.topics.length ? p.topics : [topic]),
+              skills: p.skills || [],
+              hints: p.hints || [],
+              explanation: p.explanation || "",
+              createdBy: userId,
+              seedId: p.id,
+              aiGenerated: true,
+            };
+          }));
+          await GeneratedAssessment.findByIdAndUpdate(assessment._id, {
             status: "published",
             linkedItemIds: docs.map((d) => d._id),
             publishedAt: new Date(),
@@ -187,30 +353,91 @@ export async function selectItems({ userId, sessionContext, limit = 6 }) {
     }
   }
 
-  // At the END of selectItems, right before the final return statement (line before 'return { itemIds...')
+  // At the END of selectItems, right before the final return statement
+  // ONLY use fallback if we truly have NO items after ALL attempts (including published assessments)
+  // This should be extremely rare - only if no published assessments exist and generation completely fails
   if (items.length < 1 && topics.length > 0) {
-    // As final fallback, generate 6 dummy MCQ items for the first requested topic
     const topic = topics[0];
-    const dummyItems = Array.from({ length: 6 }).map((_, i) => ({
-      type: "mcq",
-      questionType: "mcq",
-      question: `Placeholder question ${i+1} for '${topic}'?`,
-      choices: ["A", "B", "C", "D"],
-      answer: "A",
-      difficulty: 2,
-      bloom: "apply",
-      cognitiveLevel: "apply",
-      topics: [topic],
-      skills: [],
-      hints: ["Pick the most basic answer."],
-      explanation: "Correct answer is A.",
-      createdBy: userId,
-      seedId: `dummy_${topic}_${Date.now()}_${i}`,
-      aiGenerated: false
-    }));
-    const docs = await Item.insertMany(dummyItems);
-    items = docs.map(d => d.toObject());
-    console.error(`[rulesEngine] No quiz content found for topic '${topic}'. Inserted 6 DUMMY MCQs as fallback.`);
+    // Double-check: Are there ANY published assessments for this topic?
+    const anyPublished = await GeneratedAssessment.findOne({
+      topic: { $regex: new RegExp(`^${topic}$`, 'i') },
+      status: "published",
+      linkedItemIds: { $exists: true, $ne: [] },
+    }).lean();
+    
+    if (anyPublished) {
+      // If published assessment exists but we didn't get items, there's a data issue
+      console.error(`[RulesEngine] Published assessment ${anyPublished._id} exists but linkedItemIds are invalid or items deleted.`);
+      // Try to get items directly from the assessment's items array
+      if (anyPublished.items && Array.isArray(anyPublished.items) && anyPublished.items.length > 0) {
+        // Create items from assessment's items array
+        const docs = await Item.insertMany(
+          anyPublished.items.slice(0, limit).map((p) => {
+            const itemType = p.type || "mcq";
+            let gradingMethod = p.gradingMethod;
+            if (!gradingMethod) {
+              if (itemType === "mcq") gradingMethod = "exact";
+              else if (itemType === "fill_blank") gradingMethod = "levenshtein";
+              else if (itemType === "short_answer") gradingMethod = "semantic";
+              else if (itemType === "match") gradingMethod = "pair_match";
+              else if (itemType === "reorder") gradingMethod = "sequence_check";
+              else gradingMethod = "exact";
+            }
+            return {
+              type: itemType,
+              questionType: p.questionType || p.type || itemType,
+              question: p.question,
+              choices: p.choices || [],
+              answer: p.answer,
+              gradingMethod,
+              difficulty: p.difficulty || 2,
+              bloom: p.bloom || "remember",
+              cognitiveLevel: p.cognitiveLevel || p.bloom || "remember",
+              topics: (p.topics && p.topics.length ? p.topics : [topic]),
+              skills: p.skills || [],
+              hints: p.hints || [],
+              explanation: p.explanation || "",
+              createdBy: userId,
+              seedId: p.id || `assessment_${anyPublished._id}_${Date.now()}_${anyPublished.items.indexOf(p)}`,
+              aiGenerated: true,
+            };
+          })
+        );
+        // Update assessment with linkedItemIds
+        await GeneratedAssessment.findByIdAndUpdate(anyPublished._id, {
+          linkedItemIds: docs.map(d => d._id),
+        });
+        items = docs.map(d => d.toObject());
+        console.log(`[RulesEngine] Recovered ${docs.length} items from published assessment items array.`);
+      }
+    }
+    
+    // ONLY if absolutely no published assessment exists, use fallback
+    if (items.length < 1) {
+      console.warn(`[RulesEngine] No items found for topic '${topic}' after all attempts. No published assessments exist. Using fallback.`);
+      // As final fallback, generate basic MCQ items with proper grading method
+      const dummyItems = Array.from({ length: Math.max(limit, 6) }).map((_, i) => ({
+        type: "mcq",
+        questionType: "mcq",
+        question: `Placeholder question ${i+1} for '${topic}'?`,
+        choices: ["Option A", "Option B", "Option C", "Option D"],
+        answer: "Option A",
+        gradingMethod: "exact",
+        difficulty: difficultyBuckets[0] || 2,
+        bloom: "remember",
+        cognitiveLevel: "remember",
+        topics: [topic],
+        skills: [],
+        hints: ["Review the basics of this topic."],
+        explanation: "This is a placeholder question. Please ensure quiz generation is working properly.",
+        createdBy: userId,
+        seedId: `fallback_${topic}_${Date.now()}_${i}`,
+        aiGenerated: false
+      }));
+      const docs = await Item.insertMany(dummyItems);
+      items = docs.map(d => d.toObject());
+      console.error(`[RulesEngine] Inserted ${docs.length} FALLBACK MCQs for topic '${topic}'. Check AI generation service.`);
+    }
   }
 
   return {

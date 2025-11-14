@@ -5,7 +5,7 @@ import { config } from "../config/index.js";
 import { logAILLM } from "../middleware/aiLogger.js";
 import User from "../models/User.js";
 import Attempt from "../models/Attempt.js";
-import QuizSession from "../models/QuizSession.js";
+import AssessmentSession from "../models/AssessmentSession.js";
 
 const router = express.Router();
 
@@ -32,8 +32,8 @@ router.post("/", auth, async (req, res) => {
     console.log(`[Chat] User ${user?.name} mastery topics:`, Object.keys(topics));
   }
   
-  // Get recent quiz sessions with scores for context
-  const recentSessions = await QuizSession.find({ 
+  // Get recent assessment sessions with scores for context
+  const recentSessions = await AssessmentSession.find({ 
     user: req.user._id, 
     status: 'completed' 
   }).sort({ completedAt: -1 }).limit(5).lean();
@@ -44,8 +44,8 @@ router.post("/", auth, async (req, res) => {
       }).populate('item', 'topics').sort({ createdAt: -1 }).limit(20).lean()
     : [];
   
-  // Build quiz performance summary
-  const quizPerformance = recentSessions.map(s => {
+  // Build assessment performance summary
+  const assessmentPerformance = recentSessions.map(s => {
     const topics = s.metadata?.requestedTopics || [];
     return {
       score: s.score || 0,
@@ -55,17 +55,23 @@ router.post("/", auth, async (req, res) => {
     };
   });
   
-  const averageScore = quizPerformance.length > 0
-    ? Math.round(quizPerformance.reduce((sum, q) => sum + q.score, 0) / quizPerformance.length)
+  const averageScore = assessmentPerformance.length > 0
+    ? Math.round(assessmentPerformance.reduce((sum, q) => sum + q.score, 0) / assessmentPerformance.length)
     : 0;
   
-  const recentScores = quizPerformance.slice(0, 3).map(q => `${q.topic}: ${q.score}%`).join(', ');
+  const recentScores = assessmentPerformance.slice(0, 3).map(q => `${q.topic}: ${q.score}%`).join(', ');
   
   // Build detailed mastery breakdown
-  // Note: mastery is stored as decimal (0-1), convert to percentage (0-100)
+  // Note: mastery is stored as percentage (0-100) in the new system
+  // Handle both old (0-1) and new (0-100) formats for backward compatibility
   const masteryDetails = Object.entries(topics).map(([topic, data]) => {
-    const masteryDecimal = data?.mastery || 0;
-    const masteryPercent = Math.round(masteryDecimal * 100);
+    let masteryPercent = data?.mastery || 0;
+    // If mastery is less than 1, it's in old format (0-1), convert to percentage
+    if (masteryPercent < 1 && masteryPercent > 0) {
+      masteryPercent = Math.round(masteryPercent * 100);
+    } else {
+      masteryPercent = Math.round(masteryPercent);
+    }
     const attempts = data?.attempts || 0;
     const streak = data?.streak || 0;
     const level = masteryPercent >= 80 ? 'Advanced' : masteryPercent >= 60 ? 'Intermediate' : masteryPercent >= 40 ? 'Beginner' : 'Needs Practice';
@@ -76,14 +82,24 @@ router.post("/", auth, async (req, res) => {
     ? `\n${masteryDetails.join('\n')}` 
     : '\nNo mastery data available yet.';
   
-  // Identify strong and weak topics (using percentage for comparison)
+  // Identify strong and weak topics (mastery is 0-100)
   const strongTopics = Object.entries(topics)
-    .filter(([_, data]) => ((data?.mastery || 0) * 100) >= 60)
-    .map(([topic, data]) => `${topic} (${Math.round((data?.mastery || 0) * 100)}%)`);
+    .map(([topic, data]) => {
+      let mastery = data?.mastery || 0;
+      if (mastery < 1 && mastery > 0) mastery = mastery * 100; // Handle old format
+      return { topic, mastery: Math.round(mastery) };
+    })
+    .filter(({ mastery }) => mastery >= 60)
+    .map(({ topic, mastery }) => `${topic} (${mastery}%)`);
   
   const weakTopics = Object.entries(topics)
-    .filter(([_, data]) => ((data?.mastery || 0) * 100) < 60)
-    .map(([topic, data]) => `${topic} (${Math.round((data?.mastery || 0) * 100)}%)`);
+    .map(([topic, data]) => {
+      let mastery = data?.mastery || 0;
+      if (mastery < 1 && mastery > 0) mastery = mastery * 100; // Handle old format
+      return { topic, mastery: Math.round(mastery) };
+    })
+    .filter(({ mastery }) => mastery < 60)
+    .map(({ topic, mastery }) => `${topic} (${mastery}%)`);
   
   const recentTopics = [...new Set(recentAttempts.map(a => {
     const itemTopics = a.item?.topics || [];
@@ -100,17 +116,17 @@ STRONG TOPICS (≥60% mastery): ${strongTopics.length > 0 ? strongTopics.join(',
 WEAK TOPICS (<60% mastery): ${weakTopics.length > 0 ? weakTopics.join(', ') : 'None yet'}
 RECENTLY PRACTICED TOPICS: ${recentTopics.length > 0 ? recentTopics.join(', ') : 'None'}
 
-QUIZ PERFORMANCE:
-- Average Quiz Score: ${averageScore}%
-- Recent Quiz Scores: ${recentScores || 'No recent quizzes'}
-- Total Quizzes Completed: ${recentSessions.length}
+ASSESSMENT PERFORMANCE:
+- Average Assessment Score: ${averageScore}%
+- Recent Assessment Scores: ${recentScores || 'No recent assessments'}
+- Total Assessments Completed: ${recentSessions.length}
 
 INSTRUCTIONS:
-- When the student asks about improving their score, analyze their recent quiz performance and mastery levels
-- Reference their actual quiz scores and mastery percentages in your response
+- When the student asks about improving their score, analyze their recent assessment performance and mastery levels
+- Reference their actual assessment scores and mastery percentages in your response
 - If they ask "how to fix my score" or "how to improve", provide specific, actionable advice based on:
   * Their weak topics (topics with <60% mastery)
-  * Their recent quiz scores
+  * Their recent assessment scores
   * Their current mastery levels
 - For topics with low mastery (<60%), provide foundational explanations and step-by-step guidance
 - For topics with higher mastery (≥60%), you can provide more advanced concepts and challenges
@@ -118,9 +134,9 @@ INSTRUCTIONS:
 - If they ask about a topic they haven't practiced, suggest starting with basics
 - Be encouraging and acknowledge their progress
 - Keep responses detailed but concise (300-500 words)
-- Always mention their current mastery level and recent quiz performance when discussing improvement
+- Always mention their current mastery level and recent assessment performance when discussing improvement
 
-Example: If student asks "how to fix my score" and has 20% mastery in "Deep Learning" with recent quiz score of 30%, say: "I see you're at 20% mastery in Deep Learning and your recent quiz score was 30%. To improve, let's focus on building a strong foundation in the basics..."`;
+Example: If student asks "how to fix my score" and has 20% mastery in "Deep Learning" with recent assessment score of 30%, say: "I see you're at 20% mastery in Deep Learning and your recent assessment score was 30%. To improve, let's focus on building a strong foundation in the basics..."`;
 
   const messages = [
     { role: 'system', content: systemContext },

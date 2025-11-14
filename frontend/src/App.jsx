@@ -2,17 +2,24 @@ import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Link, NavLink, Outlet, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext.jsx'
 import ProtectedRoute from './components/ProtectedRoute.jsx'
+import { ToastContainer } from './components/Toast.jsx'
+import { useToast } from './hooks/useToast.js'
 import Login from './pages/Login.jsx'
 import Register from './pages/Register.jsx'
 import StudentDashboard from './pages/student/Dashboard.jsx'
 import StudentLearning from './pages/student/Learning.jsx'
-import StudentQuizzes from './pages/student/Quizzes.jsx'
+import StudentAssessments from './pages/student/Assessments.jsx'
 import StudentPerformance from './pages/student/Performance.jsx'
 import StudentChat from './pages/student/Chat.jsx'
 import StudentProfile from './pages/student/Profile.jsx'
-import QuizPage from './pages/QuizPage.jsx'
+import AssessmentResults from './pages/student/AssessmentResults.jsx'
+import AssessmentPage from './pages/AssessmentPage.jsx'
 import InstructorDashboard from './pages/instructor/Dashboard.jsx'
+import ProctorManagement from './pages/instructor/ProctorManagement.jsx'
+import InstructorAssessmentGenerator from './pages/instructor/AssessmentGenerator.jsx'
+import InstructorAssessmentReview from './pages/instructor/AssessmentReview.jsx'
 import AdminDashboard from './pages/admin/Dashboard.jsx'
+import QuestionBank from './pages/admin/QuestionBank.jsx'
 import Home from './pages/Home.jsx'
 
 function useTheme() {
@@ -35,8 +42,9 @@ function useTheme() {
 
 function Layout({ children }) {
   const { theme, setTheme } = useTheme()
-  // removed health check visualization per request
   const { token, user, setToken, setUser } = useAuth()
+  // Add the useToast hook call here
+  const { toasts, removeToast } = useToast();
 
   useEffect(() => {}, [])
 
@@ -80,6 +88,7 @@ function Layout({ children }) {
           </div>
         </div>
       </main>
+      <ToastContainer toasts={toasts} removeToast={removeToast} />
     </div>
   )
 }
@@ -94,20 +103,26 @@ export default function App() {
             <Route element={<ProtectedRoute roles={["student"]} />}> 
               <Route path="/student/dashboard" element={<StudentDashboard />} />
               <Route path="/student/learning" element={<StudentLearning />} />
-              <Route path="/student/quizzes" element={<StudentQuizzes />} />
+              <Route path="/student/assessments" element={<StudentAssessments />} />
               <Route path="/student/performance" element={<StudentPerformance />} />
               <Route path="/student/chat" element={<StudentChat />} />
               <Route path="/student/profile" element={<StudentProfile />} />
+              <Route path="/student/assessment-results/:sessionId" element={<AssessmentResults />} />
               <Route path="/student" element={<Navigate to="/student/dashboard" replace />} />
             </Route>
             <Route element={<ProtectedRoute roles={["student","instructor","admin"]} />}> 
-              <Route path="/quiz" element={<QuizPage />} />
+              <Route path="/assessment" element={<AssessmentPage />} />
             </Route>
             <Route element={<ProtectedRoute roles={["instructor","admin"]} />}> 
               <Route path="/instructor" element={<InstructorDashboard />} />
+              <Route path="/instructor/proctor" element={<ProctorManagement />} />
+              <Route path="/instructor/assessment-generator" element={<InstructorAssessmentGenerator />} />
+              <Route path="/instructor/assessment-review" element={<InstructorAssessmentReview />} />
+              <Route path="/instructor/question-bank" element={<QuestionBank />} />
             </Route>
             <Route element={<ProtectedRoute roles={["admin"]} />}> 
               <Route path="/admin" element={<AdminDashboard />} />
+              <Route path="/admin/question-bank" element={<QuestionBank />} />
             </Route>
             {/** Role-branded login shortcuts */}
             <Route path="/student-login" element={<Navigate to="/login?redirect=/student" replace />} />

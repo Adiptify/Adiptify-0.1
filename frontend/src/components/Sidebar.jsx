@@ -12,7 +12,7 @@ export default function Sidebar() {
         <nav className="flex flex-col gap-2">
           <SidebarLink to="/student/dashboard" label="Dashboard" />
           <SidebarLink to="/student/learning" label="Learning" />
-          <SidebarLink to="/student/quizzes" label="Quizzes" />
+          <SidebarLink to="/student/assessments" label="Assessments" />
           <SidebarLink to="/student/performance" label="Performance" />
           <SidebarLink to="/student/chat" label="Chat" />
           <SidebarLink to="/student/profile" label="Profile" />
